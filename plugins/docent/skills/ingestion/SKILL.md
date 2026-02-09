@@ -57,24 +57,31 @@ elif [ -d ".venv" ]; then
 fi
 ```
 
+If there is no virtual environment present, prompt the user if they want to activate one
+and proceed accordingly.
+
+Ensure the Docent SDK is installed. The package name is `docent-python`:
+
+```shell
+pip install docent-python
+```
+
 ### **Gathering Information**
 
-Collect the information needed to plan and execute the ingestion. Let the user know they can answer in shorthand or dump context—whichever works best for them. Aim to collect answers to the following:
+Collect only the essential information needed to start planning:
 
-- **API Key:** What is your Docent API key? (You can find or create one at: [https://docent.transluce.org/settings/api-keys](https://docent.transluce.org/settings/api-keys))
+- **API Key:** Check if `$DOCENT_API_KEY` is set in the environment or in a `docent.env` file. If not, ask: What is your Docent API key? (You can find or create one at: [https://docent.transluce.org/settings/api-keys](https://docent.transluce.org/settings/api-keys))
 - **Data Path:** What is the path to the files or directory you want to ingest?
-- **Collection Name:** What would you like to name this collection in Docent?
-- **Data Context:** What kind of data is this? (e.g., benchmark evaluation, agent task runs, multi-agent debate, red-teaming attempts) How was this data produced? What does each file represent? (e.g., one task per file, one episode per file, multiple attempts per task)
-- **Analysis Goals:** What kinds of analysis do you want to do in Docent? (e.g., compare two model checkpoints, find failure modes, understand a metric regression)
 
-Store these values for use in subsequent stages. Create `ingestion-plan.md` in the working directory to log all decisions and findings throughout the workflow. Here is an example structure:
+Once you have the data path, proceed to Stage 2 to analyze the data and create an ingestion plan. You will ask the user to confirm all details (including collection name, data context, and analysis goals) after presenting the plan.
+
+Create `ingestion-plan.md` in the working directory to log all decisions and findings throughout the workflow. Here is an example structure:
 
 ```
 # Docent Ingestion Plan
 
 ## Configuration
 - Data path: [from user]
-- Collection name: [from user]
 
 ## File Analysis
 [to be filled in Stage 2a]
@@ -90,6 +97,11 @@ Store these values for use in subsequent stages. Create `ingestion-plan.md` in t
 
 ## Omitted Data
 [MUST document any data not ingested and why]
+
+## Plan Confirmation
+- Collection name: [proposed, confirmed by user]
+- Data context: [your understanding, confirmed by user]
+- Analysis goals: [from user]
 
 ## Execution Log
 [to be filled in Stage 3]
@@ -160,6 +172,10 @@ Rather than pattern-matching, describe what you observe and hypothesize about th
 - "Folders appear to be organized by date, then by model name"
 - "Each subfolder contains a `trajs/` directory with JSON files and a `config.yaml`"
 - "File names include what looks like a task ID followed by an attempt number"
+
+When listing out messages, you must use `parse_chat_message` from the Docent SDK. This means that you must
+make an informed decision on each role that is provided and map it to one of the supported roles in Docent,
+since the data provided might not use the same roles.
 
 Ask the user to confirm your interpretation if uncertain.
 
@@ -378,15 +394,18 @@ Map each source field to a Docent location:
 
 #### Present Plan for Review
 
-Present the ingestion plan to the user:
+Present the complete ingestion plan to the user and ask them to confirm all details:
 
-1. Directory structure discovered
-2. Data type detected
-3. Proposed Docent hierarchy
-4. Key field mappings
-5. Omitted data (if any)
+1. **Directory structure discovered** - what files/folders were found
+2. **Data type detected** - what format the data appears to be in
+3. **Proposed Docent hierarchy** - how data will be organized into collections, agent runs, transcript groups, and transcripts
+4. **Key field mappings** - which fields map to scores, metadata, messages, etc.
+5. **Omitted data** (if any) - what data will not be ingested and why
+6. **Collection name** - propose a name based on the data, ask user to confirm or provide a different name
+7. **Data context** - summarize your understanding of what this data represents (e.g., benchmark evaluation, agent task runs, multi-agent debate). Ask the user to confirm or clarify.
+8. **Analysis goals** - ask what kinds of analysis they want to do in Docent (e.g., compare two model checkpoints, find failure modes, understand a metric regression). This helps ensure the data is structured appropriately.
 
-Wait for confirmation before proceeding to Stage 3\.
+Wait for the user to confirm all details before proceeding to Stage 3.
 
 ---
 
@@ -422,6 +441,10 @@ Skip to "Upload to Docent" below.
 ### **Custom Data Loading**
 
 For non-Inspect data, build the ingestion script incrementally.
+
+**Important:** Always save ingestion scripts to the filesystem (e.g., `ingest.py` or `ingest_<collection_name>.py`) rather than running them inline. This aids in debugging, allows for iterative refinement, and provides a record of exactly how the data was ingested.
+
+**Error handling:** When running the ingestion script, if you encounter a failure that does not look easily recoverable (e.g., unexpected data format, authentication errors, API errors, or unclear error messages), stop and prompt the user for guidance rather than attempting repeated fixes. Describe the error clearly and ask how they would like to proceed.
 
 #### Load Data
 
@@ -488,7 +511,6 @@ errors = []
 for i, record in enumerate(raw_data[:10]):
     try:
         agent_run = convert_to_agent_run(record)
-        _ = agent_run.text  # Validate by rendering
         print(f"✓ Record {i} converted successfully")
     except Exception as e:
         errors.append((i, str(e)))
