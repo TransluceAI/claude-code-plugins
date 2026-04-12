@@ -6,7 +6,11 @@ alwaysApply: true
 
 # Docent Analysis Guide
 
-You can interact with Docent by writing Python scripts that use the Docent SDK, and by calling Docent MCP tools. If Docent MCP tools are not available, alert the user that the Docent MCP server is not installed correctly.
+Your goal is to answer the user's question about AI agent behavior, while giving them justifiable trust in the results. You can interact with Docent by writing Python scripts that use the Docent SDK, and by calling Docent MCP tools.
+
+The user must have clear insight into what the analysis is doing and why at every stage. This is accomplished through two channels:
+1. Communication via the command line. Continually explain your findings, what you plan to do next and why, and any blockers. The user should never be left watching scripts run with no understanding of the analysis taking shape.
+2. The Docent UI, which intuitively renders every DQL query and its results, every object sent to a reading and its results, with citations back to the source material.
 
 ## Data models and key concepts
 * A transcript is a sequence of messages from the system, the agent (aka assistant), the user, and/or tools that the agent calls.
@@ -23,30 +27,41 @@ client = Docent()
 
 The Docent SDK can be configured by a docent.env file in the working directory. The SDK will automatically discover and load a docent.env file if it exists. You do not need to explicitly source docent.env.
 
-If you're not sure what collection the user is talking about, refer to the docent.env file in the working directory. If it does not exist, or if it does not include DOCENT_COLLECTION_ID, ask the user to paste the collection UUID.
+If you're not sure what collection the user is asking about, refer to the docent.env file in the working directory. If it does not exist, or if it does not include DOCENT_COLLECTION_ID, ask the user to paste the collection UUID.
 
 ## High-level analysis approach
 The Docent SDK facilitates two main techniques:
-* DQL, a read-only subset of SQL, to query and aggregate data already in the database (e.g. metadata that was logged with agent runs and transcripts, previous analysis results)
-* Readings, to have LLMs read transcripts and perform qualitative analysis.
+* DQL, a read-only subset of Postgres SQL, to query and aggregate data already in the database (e.g. metadata that was logged with agent runs or transcript (groups), previous analysis results)
+* Readings, to have LLMs read agent runs and perform qualitative analysis.
 
-Sometimes, the user's request will clearly pertain to one of these techniques. Other times, the user may instead ask high-level questions about the behavior of their AI agents, and you will have to investigate. In the latter case, the following general process is recommended:
+First, orient yourself to the collection.
+* Use the `get_metadata_fields` MCP tool to understand the structure of agent run metadata for the current collection.
+* If aggregating, filtering, or otherwise transforming the metadata fields might help you better understand the dataset, use `client.query()` to query the metadata with DQL. You may do this autonomously without consulting the user. Still flush to the browser, so the user can see your progress.
 
-1. Use the `get_metadata_fields` MCP tool to understand the structure of agent run metadata for the current collection.
-2. If the metadata fields might shed light on the user's question, you may use DQL to query the metadata. You may do this autonomously without consulting the user.
-3. After querying the metadata, you must decide whether qualitative analysis (reading the transcripts) would provide further insight. If it seems appropriate, use readings. Feel free to ask the user clarifying questions to ensure your readings match their intent.
+Then, before diving into analysis, assess how specific the user's request is; your response should be commensurate. The cost of pausing to align is low; the cost of writing a large and incorrect reading plan is high.
+
+* Clear directive: the user gives a concrete, specific directive that can be straightforwardly operationalized into a sequence of DQL and reading steps (e.g., "check how often the agent calls the search tool more than 3 times" or "compare pass rates between models A and B by grouping along the task dimension"). After exploring the collection, write and run the analysis script directly.
+
+* Question or unclear directive: the request is phrased as a somewhat open-ended question or vague directive that could lead to many different analysis strategies (e.g., "find me failures", "what's interesting in this data?", "why is my agent failing on math tasks?"):
+1. Explore the collection structure, using DQL if appropriate.
+2. Checkpoint with the user before committing to a full reading plan. Summarize what you learned in plain language and propose 2-3 possible analysis directions covering both quantitative and qualitative analysis.
+3. Let the user choose or refine before proceeding.
+
+Note that not all questions require qualitative analysis, but many do. Use LLM readings when appropriate.
 
 ## Troubleshooting
-If you run into any issues or unexpected behavior with the Docent platform, pause and alert the user. Do not try to work around them autonomously.
+If you run into any issues or unexpected behavior with the Docent platform, pause and alert the user. Do not try to work around them
+autonomously.
 
 * If the user has read-only access to the collection, you cannot save new reading plans. Mention to the user that they can create their own clone of the collection in the Docent web UI.
-* If the SDK does not match what's documented below, check whether the SDK is up to date.
+* If the SDK does not match what's documented in this SKILL.md, check whether the SDK is up to date.
+* If a user reports a DQL error in a reading plan, you can use the `get_reading_plan_results` MCP tool to inspect and debug the issue.
 
 # Readings
 
-The reading API lets you run LLM analysis over collections of agent transcripts. You write normal code — `client.query()` to select data, `client.read()` to define analysis — and the SDK handles batching, caching, and orchestration.
+The reading API lets you run LLM analysis over collections of agent runs. You write normal code (`client.query()` to select data, `client.read()` to define analysis) and the SDK handles batching, caching, and orchestration.
 
-A reading makes multiple calls to an LLM with different but related prompts. For example, you might want to check 50 different transcripts for environment configuration issues. There are two ways to create readings:
+A reading makes multiple calls to an LLM with different but related prompts. For example, you might want to check 50 different runs for environment configuration issues. There are two ways to create readings:
 * Template readings: you provide a prompt template and a DQL query. Each prompt will be produced by substituting columns from that row into the prompt template. If you want to include a whole array of items in one prompt, use ARRAY_AGG() and annotate that column with `is_list=True` when you make its type explicit.
 * Scripted readings: you write Python code to assemble the list of prompts.
 
@@ -57,6 +72,11 @@ Use scripted readings only when you need additional flexibility, e.g. varying th
 Readings are executed lazily: nothing runs until `flush()` is called. You normally do not need to call `flush()` manually. `flush()` is automatically called at script exit, and also anytime you attempt to access the output of a reading which has not been run yet. The system infers the execution DAG automatically. Re-running the same script is free: readings are content-addressed, so identical analyses reuse existing results.
 
 When readings are flushed, they will appear in a web UI for the user to approve. The script will pause execution until the user approves the readings. They may also cancel the script and ask you to make changes. (Note: the reading plan interface in the web UI is read-only.)
+
+Some reading plans require mid-script blocking, for example if one step waits for reading results (using `.results`) in order to construct a later step. In these cases:
+* The script may submit an initial set of steps for approval, then block waiting for results before it can continue.
+* The user may need to approve the plan more than once.
+* Warn the user upfront about multi-approval flows so they know what to expect.
 
 You should feel free to iterate on your scripts, but avoid overwriting scripts with something unrelated.
 
@@ -247,10 +267,11 @@ The quality of reading output depends on the quality the prompt you write. The L
 * Metadata alone may provide an incomplete picture. Don't forget to consider qualitative analysis!
 * You are responsible for running your reading plan scripts when appropriate. The user should not have to do so manually. After you create or update a reading plan script, don't forget to run (or re-run) it!
 * Use the `get_reading_plan_results` MCP tool to inspect the results of a reading plan. Call it with just `collection_id` and `plan_name` to see an overview of all steps and their statuses. Call it with an additional `step_name` to see the actual results for a specific step (LLM outputs for reading steps, query results for DQL-only steps).
+* Be explicit about partial data. If `get_reading_plan_results` returns truncated output, state the exact fraction of results you saw and caveat any derived numbers. Prefer DQL aggregation over `reading_results.output` when you need complete counts.
 * When communicating with the user, refer to steps by name; do not number the steps.
 
 ## Example: clustering
-A common workflow to cluster behaviors 3 readings.
+A common workflow to cluster behaviors using 3 readings.
 1. Summarize each transcript or agent run, focusing on the aspect of behavior you want to cluster (e.g. failure modes, problem-solving strategies)
 2. Put all the summaries into a single context window and identify patterns across all of them (or a random sample, if there are over ~100 items). This reading should output an array of clusters with names and descriptions.
 3. Assign each transcript or agent run to a cluster. This reading should output an enum for each agent run. The possible enum values should be taken from the output of reading 2.
@@ -541,6 +562,7 @@ WHERE metadata_json->>'environment' = 'staging';
 
 ```sql
 -- Retrieve nested transcript metadata
+-- May show up in the output of `get_metadata_fields` with dots separated segments like `metadata.conversation.speaker` or `metadata.conversation.topic`; remember to traverse the JSON path correctly! Dots indicate a nested object.
 SELECT
   id,
   metadata_json->'conversation'->>'speaker' AS speaker,
