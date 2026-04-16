@@ -25,7 +25,7 @@ from docent.sdk.client import Docent
 client = Docent()
 ```
 
-The Docent SDK can be configured by a docent.env file in the working directory. The SDK will automatically discover and load a docent.env file if it exists. You do not need to explicitly source docent.env.
+The Docent SDK can be configured by a docent.env file in the working directory. The SDK will automatically discover and load a docent.env file if it exists. You do not need to explicitly source docent.env. Note that if you `cd` into a different directory and use the Docent SDK, that may change which docent.env file gets discovered.
 
 If you're not sure what collection the user is asking about, refer to the docent.env file in the working directory. If it does not exist, or if it does not include DOCENT_COLLECTION_ID, ask the user to paste the collection UUID.
 
@@ -36,7 +36,7 @@ The Docent SDK facilitates two main techniques:
 
 First, orient yourself to the collection.
 * Use the `get_metadata_fields` MCP tool to understand the structure of agent run metadata for the current collection.
-* If aggregating, filtering, or otherwise transforming the metadata fields might help you better understand the dataset, use `client.query()` to query the metadata with DQL. You may do this autonomously without consulting the user. Still flush to the browser, so the user can see your progress.
+* If aggregating, filtering, or otherwise transforming the metadata fields might help you better understand the dataset, use `client.query()` to query the metadata with DQL. You may do this autonomously without consulting the user. Still flush with `client.flush(open_in_browser=True)`, so the user can see your progress.
 
 Then, before diving into analysis, assess how specific the user's request is; your response should be commensurate. The cost of pausing to align is low; the cost of writing a large and incorrect reading plan is high.
 
@@ -50,10 +50,8 @@ Then, before diving into analysis, assess how specific the user's request is; yo
 Note that not all questions require qualitative analysis, but many do. Use LLM readings when appropriate.
 
 ## Troubleshooting
-If you run into any issues or unexpected behavior with the Docent platform, pause and alert the user. Do not try to work around them
-autonomously.
+If you make a mistake in your code (e.g. invalid DQL syntax), you should try to fix it autonomously. If the issue is not with your code but with your tools or environment (Docent server inaccessible, MCP disconnected, Python not installed, lacking permissions, missing data), pause and alert the user. Do not try to work around those issues autonomously.
 
-* If the user has read-only access to the collection, you cannot save new reading plans. Mention to the user that they can create their own clone of the collection in the Docent web UI.
 * If the SDK does not match what's documented in this SKILL.md, check whether the SDK is up to date.
 * If a user reports a DQL error in a reading plan, you can use the `get_reading_plan_results` MCP tool to inspect and debug the issue.
 
@@ -78,12 +76,21 @@ Some reading plans require mid-script blocking, for example if one step waits fo
 * The user may need to approve the plan more than once.
 * Warn the user upfront about multi-approval flows so they know what to expect.
 
+Notes on what readings can see:
+* When an agent run is rendered for a reading, the LLM can see the agent run metadata and all its transcripts
+* When a transcript is rendered for a reading, the LLM can see the transcript metadata
+
 You should feel free to iterate on your scripts, but avoid overwriting scripts with something unrelated.
 
 * Fix a problem in your analysis -> modify existing script and re-run
 * Extend your analysis on the same topic with an additional reading -> modify existing script and re-run
+  * If one reading plan uses results from another reading plan, that's a sign you're splitting things up too much. Related readings belong in the same plan.
 * Explore a new question on the same dataset -> create a new script
 * Take a different approach to the same question -> create a new script
+
+Do not read or modify reading plan scripts that were created outside the current session, unless the user explicitly asks.
+
+Note: Reading plans are currently only supported for collections with up to 100k runs. You will get an error if the collection contains more than 100k runs. The Docent developers are working to make reading plans more performant and scalable to support larger collections.
 
 Note: an obsolete version of the SDK provided an API called `LLMRequest`. If you encounter old code using LLMRequests, you can offer to migrate it to readings.
 
@@ -252,7 +259,7 @@ The quality of reading output depends on the quality the prompt you write. The L
 * If the user asks you to "summarize the agent runs", "classify the results", or similar, they do not necessarily mean that you (the coding agent) should do so directly. In most cases, it is better to use readings for this.
 * It's good to ask clarifying questions! If you're uncertain of the user's intent, ask and wait for their answer before proceeding.
 * Agent runs contain metadata. Metadata varies by collection. Do not make assumptions about the structure of run metadata. Use the `get_metadata_fields` MCP tool to find out.
-* You must write your code out as a script file. Unless otherwise instructed, you may place analysis scripts in the current working directory.
+* You must write your code out as a script file. Unless otherwise instructed, you may place analysis scripts in the current working directory. Avoid writing Python code inline in a Bash command, except for trivial tasks that do not create reading plans.
 * If you're doing exploratory DQL queries before writing the full reading plan, put those queries in the same Python file that the reading plan will go into. Use `client.show_query_result()` so they show up in the UI. Put exploratory queries before the main reading plan, in a group titled "Explore the dataset" or similar, so the user can collapse them if desired.
 * Make DQL query results self-verifying. Include extra columns that let the user confirm your query logic at a glance. The user should be able to verify correctness from the output alone, without re-reading the SQL. For example:
   * If you filter by a condition, include the filtered column in the SELECT.
@@ -432,7 +439,6 @@ raw_rows = client.dql_result_to_dicts(result)
 | `readings` | Reading definitions (template or scripted LLM analysis). |
 | `reading_results` | Results from running readings. |
 | `reading_result_links` | Junction table linking readings to their results. |
-| `analysis_sessions` | Session containers grouping readings together. |
 
 ### `agent_runs`
 
@@ -538,17 +544,6 @@ For scripted readings, `arguments_dict` holds arbitrary user-supplied metadata p
 | `reading_id` | FK to readings.id. |
 | `result_id` | FK to reading_results.id. |
 
-### `analysis_sessions`
-
-| Column | Description |
-| --- | --- |
-| `id` | Session identifier (UUID). |
-| `collection_id` | Collection that owns the session. |
-| `name` | Display name (from session_name or source script). |
-| `readings_json` | Ordered list of step entries (readings, dql_only, headings). |
-| `created_at` | When the session was created. |
-| `updated_at` | Last modification time. |
-
 ## JSON Metadata Access Patterns
 
 Docent stores user-supplied metadata as JSON. Access using Postgres operators:
@@ -605,7 +600,7 @@ When querying JSON fields, comparisons default to string semantics. Cast values 
 | Array helpers (`ARRAY[...]`, `array_cat`, `array_length`, `cardinality`, `unnest`, `ARRAY(SELECT ...)`, `= ANY`, `= ALL`, `array_position`, `array_remove`) |
 | Type helpers (`CAST`, `::`) |
 
-Unsupported constructs include `*`, user-defined functions, and any DDL or DML commands.
+Unsupported constructs include `*`, `UNNEST(...)`, user-defined functions, and any DDL or DML commands.
 
 ## Example Queries
 
@@ -736,8 +731,8 @@ LIMIT 50;
 - `SELECT *` is forbidden
 - `COUNT(*)` is forbidden - use `COUNT(column_name)` instead
 
-### GROUP BY Alias Workaround
-Aliases don't work directly in GROUP BY when selecting from `agent_runs`. Use a subquery:
+### GROUP BY Alias Restriction
+Aliases defined in a `SELECT` clause cannot be referenced in `GROUP BY`. Use a subquery:
 
 ```sql
 SELECT task, model_name, COUNT(task) AS run_count
