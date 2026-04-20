@@ -36,7 +36,7 @@ The Docent SDK facilitates two main techniques:
 
 First, orient yourself to the collection.
 * Use the `get_metadata_fields` MCP tool to understand the structure of agent run metadata for the current collection.
-* If aggregating, filtering, or otherwise transforming the metadata fields might help you better understand the dataset, use `client.query()` to query the metadata with DQL. You may do this autonomously without consulting the user. Still flush with `client.flush(open_in_browser=True)`, so the user can see your progress.
+* If aggregating, filtering, or otherwise transforming the metadata fields might help you better understand the dataset, write and run a script using `client.query()` to query the metadata with DQL. You may do this autonomously without consulting the user. (If you later decide to use readings, you can add the readings to the same script.)
 
 Then, before diving into analysis, assess how specific the user's request is; your response should be commensurate. The cost of pausing to align is low; the cost of writing a large and incorrect reading plan is high.
 
@@ -96,8 +96,10 @@ Note: an obsolete version of the SDK provided an API called `LLMRequest`. If you
 
 ## Core API
 
-### `client.query(collection_id, dql) -> QueryResult`
+### `client.query(collection_id, dql, *, name=None) -> QueryResult`
 Returns a lazy handle.
+
+- `name`: Display label for this DQL-only step in the reading plan UI.
 
 For non-trivial queries, you may include comments within the DQL string to clarify (normal `--` SQL syntax).
 
@@ -157,18 +159,6 @@ Parameters:
   - `"results"`: always create a new reading record, but reuse individual results to avoid redundant LLM calls
   - `"none"`: no caching — force full re-evaluation
 
-### `client.show_query_result(query_result, name=None)`
-Registers a DQL-only display step. Results shown in the UI but not persisted.
-
-### `client.step_group(label) -> StepGroupContext`
-Opens a labeled step group in the session UI. Use as a context manager to auto-close the group scope:
-```python
-with client.step_group("Section A"):
-    client.read(...)
-client.read(...)  # back to top-level
-```
-Only use a group when several readings are closely related. Do not create a step group with a single step.
-
 ### `client.preset_reading(preset_id, query_result=None, *, name=None, cache_mode="reading") -> Reading`
 Registers a reading step backed by a server-side preset. The server resolves the preset's latest config at submission time.
 - `preset_id`: The reading preset ID. Use the `list_reading_presets` MCP tool to discover available presets.
@@ -215,6 +205,7 @@ summary_query = client.query(
     f"SELECT rr.output->>'category' AS cat FROM reading_results rr "
     f"JOIN reading_result_links rrl ON rrl.result_id = rr.id "
     f"WHERE rrl.reading_id = '{classify}'",
+    name="Aggregate categories from classify",
 )
 ```
 
@@ -260,7 +251,7 @@ The quality of reading output depends on the quality the prompt you write. The L
 * It's good to ask clarifying questions! If you're uncertain of the user's intent, ask and wait for their answer before proceeding.
 * Agent runs contain metadata. Metadata varies by collection. Do not make assumptions about the structure of run metadata. Use the `get_metadata_fields` MCP tool to find out.
 * You must write your code out as a script file. Unless otherwise instructed, you may place analysis scripts in the current working directory. Avoid writing Python code inline in a Bash command, except for trivial tasks that do not create reading plans.
-* If you're doing exploratory DQL queries before writing the full reading plan, put those queries in the same Python file that the reading plan will go into. Use `client.show_query_result()` so they show up in the UI. Put exploratory queries before the main reading plan, in a group titled "Explore the dataset" or similar, so the user can collapse them if desired.
+* If you're doing exploratory DQL queries before writing the full reading plan, put those queries in the same Python file that the reading plan will go into. Use `client.query()` so they show up in the UI.
 * Make DQL query results self-verifying. Include extra columns that let the user confirm your query logic at a glance. The user should be able to verify correctness from the output alone, without re-reading the SQL. For example:
   * If you filter by a condition, include the filtered column in the SELECT.
   * If you join or pair rows on a key (e.g., matching runs by task), include that key for both sides.
@@ -296,6 +287,7 @@ client.plan_name = "Mistake clustering"
 sampled_transcripts = client.query(
     collection_id,
     "SELECT transcripts.id AS transcript FROM transcripts LIMIT 100",
+    name="Sample transcripts for clustering",
 )
 
 summarize = client.read(
@@ -315,7 +307,8 @@ summaries = client.query(
     f"SELECT array_agg(rr.id) AS summaries "
     f"FROM reading_results rr "
     f"JOIN reading_result_links rrl ON rrl.result_id = rr.id "
-    f"WHERE rrl.reading_id = '{summarize}' "
+    f"WHERE rrl.reading_id = '{summarize}' ",
+    name="Collect summarize reading results",
 )
 
 propose_clusters = client.read(
@@ -391,6 +384,8 @@ extract = client.read(
 # End of plan triggers auto-flush again
 ```
 
+How the web UI looks: each call to `client.query()` and `client.read()` creates a step. Each step appears in a step card with the auto-assigned alias (e.g. $1, $2) and the step name. The order of display matches the order of aliases. If the user asks about "the second box" in the web UI they are asking about the step with alias $2.
+
 # DQL (Docent Query Language)
 
 Docent Query Language is a read-only SQL subset that supports ad-hoc exploration in Docent.
@@ -399,7 +394,7 @@ Queries can only run over a single collection by design.
 
 ## Executing DQL via the Python SDK
 
-Prefer `client.query()` — it registers the query as a UI-visible step in the analysis session. Use `client.show_query_result()` to display query results in the UI without feeding them into a reading.
+Prefer `client.query()` — it registers the query as a UI-visible step in the analysis session.
 
 `client.execute_dql()` is a lower-level escape hatch for cases where you need raw row data in Python (e.g., to drive conditional logic between reading steps). Its results are **not** shown in the Docent UI.
 
@@ -416,8 +411,8 @@ schema = client.get_dql_schema(collection_id)
 rows = client.query(
     collection_id,
     "SELECT agent_runs.id AS agent_run_id FROM agent_runs LIMIT 10",
+    name="Recent runs",
 )
-client.show_query_result(rows, name="Recent runs")
 
 # Lower-level alternative (results not shown in UI)
 result = client.execute_dql(
