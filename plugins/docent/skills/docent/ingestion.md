@@ -614,7 +614,7 @@ https://docent.transluce.org/collection/[collection_id]
 
 ## **Reference**
 
-See `references/docent-data-models.md` for complete Docent data model documentation.
+See the data model guidance and examples in this file for Docent data model documentation.
 
 For additional guidance on Docent data models and API usage, consult the official documentation: [https://docs.transluce.org/llms.txt](https://docs.transluce.org/llms.txt)
 
