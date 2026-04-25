@@ -4,9 +4,9 @@ A collection of plugins for Claude Code.
 
 ## Available Plugins
 
-| Plugin | Description | Version |
-|--------|-------------|---------|
-| [docent](./plugins/docent) | Docent AI analysis tools | 0.1.4 |
+| Plugin | Description |
+|--------|-------------|
+| [docent](./plugins/docent) | Docent AI analysis tools |
 
 The docent plugin includes two skills:
 - **analysis** - Analyzing agent behavior with Docent
