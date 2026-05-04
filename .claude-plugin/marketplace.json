@@ -11,7 +11,7 @@
       "name": "docent",
       "source": "./plugins/docent",
       "description": "Docent AI analysis tools for Claude Code",
-      "version": "1.0.0",
+      "version": "0.1.7",
       "author": {
         "name": "TransluceAI"
       },
