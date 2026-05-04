@@ -43,11 +43,12 @@ Access attributes to get `ColumnRef` objects (e.g., `rows.transcript`).
 
 When you use a ColumnRef in a prompt template, you should make its type explicit with `.as_type()`. The type can be:
 * transcript
+* transcript_slice
 * agent_run
 * reading_result
 * text
 
-For `text`, the literal text from that column will be embedded in the prompt. For other types, the column will be interpreted as the UUID of an object in the database, and that object will be formatted as a string and embedded in the prompt.
+For `text`, the literal text from that column will be embedded in the prompt. For most other types, the column will be interpreted as the UUID of an object in the database, and that object will be formatted as a string and embedded in the prompt. The exception is `transcript_slice`, whose column value is a JSON object produced by the DQL `transcript_slice(transcript_id, start_idx, end_idx)` function (see the **Transcript slices** section below).
 
 When you specify a type, you are also specifying whether the prompt slot is scalar or list-valued:
 * `.as_type("transcript")` means scalar and defaults to `is_list=False`
@@ -89,7 +90,7 @@ reading = client.read(
 )
 ```
 
-Other ref types for scripted readings: `AgentRunRef(id, collection_id)`, `ReadingResultRef(id, collection_id)`.
+Other ref types for scripted readings: `AgentRunRef(id, collection_id)`, `TranscriptSliceRef(transcript_id, start_idx, end_idx, agent_run_id, collection_id)`, `ReadingResultRef(id, collection_id)`.
 
 Parameters:
 - `prompt_template` or `prompts_list` (mutually exclusive)
@@ -103,6 +104,73 @@ Parameters:
   - `"reading"` (default): reuse an existing reading with matching content hash
   - `"results"`: always create a new reading record, but reuse individual results to avoid redundant LLM calls
   - `"none"`: no caching — force full re-evaluation
+
+### Transcript slices
+
+A `transcript_slice` parameter renders a contiguous message range on a specific transcript instead of the whole transcript. The range is inclusive on both ends (`start_idx`, `end_idx`), and rendered block labels preserve the original transcript message indices so the LLM can still cite by absolute position. Negative indices are valid and interpreted like in Python, e.g. to get the last 5 transcript blocks you could set start_idx=-5 end_idx=-1.
+
+Transcript slices are a specialized feature, and should only be used if the user's request strongly implies that they're the right tool (e.g. "look at the last 5 messages of each transcript").
+
+**Template reading.** Produce slice references directly in DQL with the `transcript_slice(transcript_id, start_idx, end_idx)` function, then annotate the column with `.as_type("transcript_slice")`:
+
+```python
+slices = client.query(
+    collection_id,
+    """
+    WITH windows AS (
+      SELECT
+        t.id AS transcript_id,
+        GREATEST(0, CAST(t.metadata_json->>'first_error_idx' AS INTEGER) - 3) AS start_idx,
+        CAST(t.metadata_json->>'first_error_idx' AS INTEGER) + 3 AS end_idx
+      FROM transcripts t
+      WHERE t.metadata_json ? 'first_error_idx'
+    )
+    SELECT transcript_slice(transcript_id, start_idx, end_idx) AS window
+    FROM windows
+    """,
+    name="Error context windows",
+)
+
+reading = client.read(
+    prompt_template=[
+        "Explain what went wrong in this excerpt: ",
+        slices.window.as_type("transcript_slice"),
+    ],
+    model="openai/gpt-5.4-mini",
+    name="Explain error contexts",
+)
+```
+
+Notes on the DQL function:
+* `transcript_slice()` must be called with exactly three arguments and emits a JSON object value. It is allowed anywhere a scalar expression is valid (including inside `CASE`, `DISTINCT`, `ORDER BY`, or `ARRAY_AGG(...)` for list-valued slots).
+* Access control and collection scoping come from the underlying transcript; indices outside the transcript simply render fewer messages rather than erroring.
+* `start_idx` and `end_idx` may be equal to render a single message.
+
+**Scripted reading.** Construct a `TranscriptSliceRef` per prompt. Use this when the slice indices come from Python logic rather than SQL (e.g., derived from earlier reading results):
+
+```python
+from docent import TranscriptSliceRef
+
+reading = client.read(
+    prompts_list=[
+        [
+            "Summarize this excerpt: ",
+            TranscriptSliceRef(
+                transcript_id="<transcript-uuid>",
+                start_idx=10,
+                end_idx=25,
+                agent_run_id="<run-uuid>",
+                collection_id=collection_id,
+            ),
+        ],
+    ],
+    model="openai/gpt-5.4-mini",
+    name="Slice summaries",
+)
+```
+
+**Context config for slices.** `TranscriptSliceContextConfig` exposes the same filters as `TranscriptContextConfig` (`transcript_metadata`, `message_metadata`); defaults are listed under **Context configs** above. Attach it the same way as other context configs — via `context_configs={param_name: TranscriptSliceContextConfig(...)}` for template readings, or `TranscriptSliceRef(..., context_config=TranscriptSliceContextConfig(...))` for scripted readings. As with other context configs, changing it changes the reading's content hash and therefore its cache identity.
+
 
 ### Context configs
 Use context configs to control which metadata and transcript subtrees are rendered when a reading prompt includes an `agent_run`, `transcript`, or `transcript_slice` parameter. Context configs do not change which rows DQL selects; they only change how selected context items are formatted for the LLM. They are part of the reading config/cache identity, so changing them creates a different reading.
