@@ -344,13 +344,12 @@ Registers a reading step backed by a server-side preset. The server resolves the
 - `cache_mode`: See cache_mode description under `client.read()`.
 
 ### `client.flush(open_in_browser=True, auto_approve=False) -> dict`
-Submits all pending readings to the server. Returns `plan_id` and per-entry `entry_statuses`. You normally do not need to call this explicitly. If `auto_approve=True`, the SDK will immediately approve newly submitted reading steps before waiting for results. Implicit flushes triggered by `reading.id`, `reading.results`, `reading.wait()`, notebooks, or `atexit` do not enable auto-approval unless you call `flush(auto_approve=True)` yourself first.
+Submits all pending readings to the server. Returns `plan_id` and per-entry `entry_statuses`. You normally do not need to call this explicitly. If `auto_approve=True`, the SDK will immediately approve newly submitted reading steps before waiting for results. Implicit flushes triggered by `reading.id`, `reading.results`, or `atexit` do not enable auto-approval unless you call `flush(auto_approve=True)` yourself first.
 
 ### `Reading` handle
 - `f"{reading}"` → `$alias` (for use in DQL referencing)
 - `reading.id` → forces flush, returns real reading UUID
 - `reading.results` → forces flush, blocks until complete, returns `list[ReadingResult]`
-- `reading.wait()` → forces flush and blocks without returning results
 
 ### Plan naming
 ```python
@@ -387,7 +386,7 @@ summary_query = client.query(
 
 ## Model selection
 
-Use `"provider/model_name"` format. Use `"openai/gpt-5.4-mini"` as the default.
+Use `"provider/model_name"` format. For simple questions about transcript content, use openai/gpt-5.4-mini. For more complex interpretation, reasoning, or judgement, use openai/gpt-5.5.
 
 Important: Do not use openai/gpt-4o or openai/gpt-4o-mini. Those models are obsolete.
 
@@ -398,15 +397,16 @@ If you need structured output, you may provide a JSON schema.
 String fields may optionally allow the LLM to cite parts of its input.
 * Fields such as "summary" or "description" or "explanation" should usually have citations.
 * Do not include citations for fields such as "category", "classification" or any other field which is likely to be filtered on downstream.
+* "Reasoning" fields should come before "decision" fields. That way, the LLM is generating the decision based on the reasoning, instead of justifying its decision post-hoc.
 
 ```python
 output_schema = {
     "type": "object",
     "properties": {
-        "category": {"type": "string", "enum": ["helpful", "harmful", "neutral"]},
         "reasoning": {"type": "string", "citations": True},
+        "category": {"type": "string", "enum": ["helpful", "harmful", "neutral"]},
     },
-    "required": ["category", "reasoning"],
+    "required": ["reasoning", "category"],
 }
 ```
 
@@ -422,6 +422,26 @@ The quality of reading output depends on the quality the prompt you write. The L
 * If you are looking for a particular behavior, how exactly is that behavior defined? If you're proposing a specific definition, make sure the user signs off on it.
 * If you are asking the LLM to analyze other reading results, remind it to cite those reading results, NOT the original transcripts which the results may refer to.
 
+## Chosing clear names
+The name of each step (client.query and client.read) should fit on one line. Subject to that constraint, make step names descriptive. Ideally, the names make sense to a user without much context on your analysis. A descriptive name does not have to be wordy.
+
+Bad step name: "Sample transcript slices"
+Missing information: What kind of sample? How many? How are you slicing the transcripts?
+Better name: "Get first 5 messages of 100 random transcripts"
+
+Bad step name: "A: category only (medium reasoning)"
+Missing information: What is A? Category of what? Is the reasoning from the analysis or the original transcript?
+Better name: "Classify failure modes with medium reasoning"
+
+Bad step name: "Explain A-vs-B disagreements"
+Missing information: What is A and B? What are the disagreements about?
+Better name: "Explain why medium-reasoning judge and high-reasoning judge assigned different failure categories"
+
+A similar principle applies to the column names in user-facing DQL tables (i.e. tables created with client.query). Name output columns clearly with the `AS` keyword.
+
+Bad column name: "cat"
+Better name: "judge_classification"
+
 ## Coding tips for reading scripts
 
 * You must write your code out as a script file. Place analysis scripts in a per-session subdirectory under `docent_analyses/`, using the format `docent_analyses/<date>_<short-label>/` (e.g., `docent_analyses/2026-04-20_safety-eval/`). Create the directory at the start of the session. The short label should be a 2-3 word slug describing the analysis topic. This keeps scripts organized across sessions and out of the project's working directory.
@@ -431,7 +451,6 @@ The quality of reading output depends on the quality the prompt you write. The L
   * If you join or pair rows on a key (e.g., matching runs by task), include that key for both sides.
   * If you compare values (e.g., selecting rows where model A outperformed model B), include both models' names and scores, not just the winning run.
 * Don't Repeat Yourself. This is particularly important when it comes to prompts for LLMs. The user will likely want to modify prompts, and they should not have to track down multiple copies of a prompt throughout your code. If you need to create different variants of a prompt, build them from reusable pieces and/or use string interpolation, so there is a single source of truth for each part of the prompt.
-* Keep variable names generic. For example, if you are comparing the performance of two models, you might refer to them as "model_a" and "model_b" in your code, and then declare the identity of these models in one place only. This makes your code more reusable, so we can perform the same analysis on other data.
 * Be sparing with print statements.
 * If you are analyzing a limited sample of many items (e.g. because you can only fit so many in the context window), be mindful of *how* you are sampling them. The most recent N items may be a biased sample. It is safe to assume that UUIDs are random.
 * If you are using a reading to categorize things (e.g. types of problems, strategies, or mistakes), don't try to come up with a good list of categories without looking at the data. See the clustering example below.

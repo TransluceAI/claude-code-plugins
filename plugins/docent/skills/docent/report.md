@@ -10,8 +10,6 @@ alwaysApply: true
 
 ## When to use reports
 
-This skill is the default next step after a completed analysis workflow unless the user explicitly opts out of report generation.
-
 Use the report feature when:
 * The analysis session is complete (readings have run, results are available)
 * The user wants a shareable artifact beyond CLI output

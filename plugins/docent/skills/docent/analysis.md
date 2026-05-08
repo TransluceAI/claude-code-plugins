@@ -6,7 +6,7 @@ alwaysApply: true
 
 # Docent Analysis Guide
 
-**The goal of a Docent analysis is to give the user justifiable trust in the results and, by default, turn those results into a shareable report.** The user should have clear insight into what the analysis is doing, why it is being run, and how it will feed the final report. This is accomplished through two channels:
+**The goal of a Docent analysis is to give the user justifiable trust in the results.** The user should have clear insight into what the analysis is doing and why it is being run. This is accomplished through two channels:
 * **Communication via the command line.** Explain what you found, what you plan to do, and why — before writing code. Surface blockers and intermediate findings in plain language. The user should never be left watching scripts run with no understanding of the analysis taking shape.
 * **Readings in the Docent UI.** Readings make the analysis legible: the user can see every prompt sent to the LLM, every transcript analyzed, and every result returned — with citations back to the source material. Prefer readings over opaque DQL aggregations precisely because readings give the user a clear, inspectable visualization of the qualitative analysis performed. DQL summaries (counts, averages) are useful for orientation, but they are not self-explanatory the way a reading with cited evidence is.
 
@@ -27,9 +27,8 @@ These apply throughout the entire analysis session:
   Good — explains the analytical choice so the user can redirect:
   > "Safety-monitoring is the broadest single safety indicator and it's scored for every run, so I'll use that as the primary ranking. I'll sample the 25 worst-scoring transcripts — enough to see patterns without blowing the analysis budget. If you'd rather focus on a specific failure type like co-rumination, we can narrow the filter."
 * **Minimize wasted user attention.** Every tool call the user has to approve is a cost — and the approval screen shows the full code block, which can fill the user's entire screen and destroy context. Keep inline scripts short (under ~15 lines) so the user can read and approve them at a glance. For anything longer, write a named script file — the user then approves a short `uv run script_name.py` command instead of scrolling through 60 lines of inline Python. Run orientation queries independently (not in a monolithic script that fails as a unit). Fix syntax errors in-place rather than requiring an edit-rerun approval loop.
-* **Default to a report-backed workflow.** Unless the user explicitly says they only want exploration, debugging, or a narrower intermediate deliverable, treat the analysis as the evidence-gathering phase for a report. Say this plainly throughout the session so the user knows the intended deliverable is a report draft, not just an approved analysis in the UI.
 * **Speak in analysis terms, not platform terms.** The user is here to understand their data, not to learn Docent internals. Never use platform jargon in user-facing text. Translate to plain language:
-  - "reading" / "reading plan" → "analysis" or "deep dive"
+  - "reading" / "reading plan" → "analysis"
   - "reading preset" → "saved analysis template" (or just omit — the user rarely needs to know)
   - "flush" → never mention to the user
   - "DQL" / "DQL query" → "query," or just describe what you're checking
@@ -76,6 +75,8 @@ If you're not sure what collection the user is talking about:
 * Otherwise, check the `docent.env` file in the working directory for `DOCENT_COLLECTION_ID`.
 * If neither is available, ask the user to paste the collection UUID.
 
+The main Docent deployment lives at https://docent.transluce.org but the user may connect a different deployment by overriding DOCENT_FRONTEND_URL in docent.env. The Docent SDK will print out the frontend URL when it is initialized, e.g. `Authenticating Docent client with frontend_url='https://docent.transluce.org'`. If you see a different frontend URL, use that URL in place of `https://docent.transluce.org` for any links.
+
 ## Troubleshooting
 
 If you run into any issues or unexpected behavior with the Docent platform, pause and alert the user. Do not try to work around them autonomously.
@@ -93,17 +94,12 @@ If you run into any issues or unexpected behavior with the Docent platform, paus
 
 When the user asks to see something in the Docent UI, or when you want to point the user at specific content, **construct a direct URL** rather than writing a script to extract and redisplay the content. The Docent frontend supports deep links to most content types.
 
-**URL patterns** (where `{frontend_url}` is the Docent instance URL, e.g., `https://docent.transluce.org`):
-
 | Content | URL pattern |
 |---|---|
-| Collection dashboard | `{frontend_url}/dashboard/{collection_id}` |
-| Agent run | `{frontend_url}/dashboard/{collection_id}/agent_run/{agent_run_id}` |
+| Collection dashboard | `https://docent.transluce.org/dashboard/{collection_id}` |
+| Agent run | `https://docent.transluce.org/dashboard/{collection_id}/agent_run/{agent_run_id}` |
 | Agent run at specific transcript/block | Same as above + `?transcript_idx={N}&block_idx={M}` |
-| Rubric view | `{frontend_url}/dashboard/{collection_id}/rubric/{rubric_id}` |
-| Rubric result for a specific run | `{frontend_url}/dashboard/{collection_id}/rubric/{rubric_id}/agent_run/{agent_run_id}` |
-| Reading plan | `{frontend_url}/dashboard/{collection_id}/reading-plan/{reading_plan_id}` |
-| Report | `{frontend_url}/dashboard/{collection_id}/reports/{report_id}` |
+| Reading plan | `https://docent.transluce.org/dashboard/{collection_id}/reading-plan/{reading_plan_id}` |
 
 **When to use UI links instead of scripts:**
 * The user asks to "see" or "browse" something (e.g., rubric definitions, specific transcripts, judge outputs) — link them directly rather than extracting content into the terminal.
@@ -111,6 +107,12 @@ When the user asks to see something in the Docent UI, or when you want to point 
 * You're presenting analysis findings — include the reading plan URL so the user can verify claims.
 
 **How to find IDs for constructing URLs:** Use `execute_dql` MCP tool queries against the relevant tables (`agent_runs`, `transcripts`, `judge_results`, `readings`, etc.) to look up IDs, then construct the URL.
+
+## Reading transcripts (optional)
+
+You can use the get_agent_run_messages MCP tool to read the content of an individual agent run or transcript as needed. Use this sparingly; prefer readings for systematic analysis of agent behavior. However, you may decide to use get_agent_run_messages:
+* To understand what a collection contains, if metadata doesn't make it clear
+* To understand what a behavior of interest might concretely look like, when crafting a reading prompt to detect the behavior
 
 ---
 
@@ -201,9 +203,9 @@ ORDER BY run_count DESC
 
 ## Step 2: Checkpoint and design the analysis
 
-### 2a. Checkpoint on the report angle
+### 2a. Checkpoint on the analysis angle
 
-**Do not skip this step.** Summarize what you learned in plain language (not raw query output) and propose 2-3 analysis directions. Let the user choose which question the final report should answer, then refine the analysis plan to support that report with inspectable evidence. The user needs early visibility and control over both the analytical direction and the intended deliverable.
+If the user has not precisely stated what analysis they want you to run, now is a good time to check in. Summarize what you learned in plain language (not raw query output) and propose 2-3 analysis directions. Let the user choose which question they want to focus on. The user needs early visibility and control over both the analytical direction and the intended deliverable.
 
 **Stop and wait for the user to respond.** Do not propose directions and then immediately commit to one. This is the most common violation of this step:
 
@@ -213,12 +215,12 @@ Bad — proposes then bulldozes:
 Good — proposes and stops:
 > "Here are three directions: (1) safety failures across models, (2) which scenarios trip up models the most, (3) the tension between empathy and safety. Which sounds most useful?"
 
-Because you've been reporting findings throughout Step 1, this checkpoint should feel like a natural conclusion — not a sudden info-dump. The user already has context; now you're proposing what the eventual report should focus on and what analysis will support it.
+Because you've been reporting findings throughout Step 1, this checkpoint should feel like a natural conclusion — not a sudden info-dump.
 
 Tips for an effective checkpoint:
 * **Use a comparison table** when the collection compares models, configurations, or conditions — tables make relative differences scannable at a glance.
-* **Ground each proposed direction in something specific from the data.** Not "we could look at failure modes" but "Gemini and Grok show 3-5x higher scores on poetic escalation and lock-in — a report could focus on what failure pattern is driving that gap and what interventions it suggests."
-* **Keep it short.** The checkpoint is a decision point, not the report itself. 1 paragraph of summary + 2-3 bullet-point proposals is usually right.
+* **Ground each proposed direction in something specific from the data.** Not "we could look at failure modes" but "Gemini and Grok show 3-5x higher scores on poetic escalation and lock-in — analysis could focus on what failure pattern is driving that gap and what interventions it suggests."
+* **Keep it short.** The checkpoint is a decision point, not a final report. 1 paragraph of summary + 2-3 bullet-point proposals is usually right.
 
 ### 2b. Surface analytical choices and design the pipeline
 
@@ -236,7 +238,7 @@ Good — surfaces the choices that shape what the analysis will find:
 
 For each piece of analytical work, decide: is this a **DQL query** (aggregation, filtering, counting), an **LLM analysis** (categorization, summarization, qualitative judgment), or **Python glue** (orchestrating queries and analyses, reformatting data)?
 
-**The self-check:** If your plan includes substantial Python logic — statistical tests, clustering algorithms, scoring functions, classification rules — stop and reconsider. You are almost certainly planning work that should be an LLM analysis instead. The user cannot verify, inspect, or drill into results that come from opaque Python. Docent's value is inspectable analysis, not opaque computation.
+**The self-check:** If your plan includes substantial Python logic — statistical tests, clustering algorithms, scoring functions, classification rules — stop and reconsider. You may be planning work that should be an LLM analysis instead. The user cannot verify, inspect, or drill into results that come from opaque Python. Docent's value is inspectable analysis, not opaque computation.
 
 #### Translating "computational" questions into the Docent pipeline
 
@@ -271,7 +273,7 @@ Before coding, briefly describe the analytical framing — not the pipeline step
 
 Consult `./readings-reference.md` for the Readings API, coding tips, and example patterns (especially the clustering example). Consult `./dql-reference.md` for DQL syntax, table schemas, and quirks.
 
-Write a Python script implementing the pipeline you designed in Step 2b. The script should contain only analyses and the queries needed to feed data into them (`client.query()`). **Do not put exploratory queries in the analysis script** — those belong in Step 1 orientation, not here. The user's first interaction with the analysis should be approving what gets analyzed, not scrolling past raw query tables.
+Write a Python script implementing the pipeline you designed in Step 2b. Keep the script clean. Do not put exploratory queries in the analysis script — those belong in Step 1 orientation. However, you may add DQL queries to the script to present key findings (e.g. if an important reading outputs categories, you could count the frequency of each category). Do this sparingly, only when it will help the user understand the findings beyond seeing a table of reading results.
 
 If you feel the urge to write substantial Python logic (clustering, scoring, statistical tests), go back to the **translation table in Step 2b** and express the work as LLM analyses and DQL aggregations instead.
 
@@ -295,8 +297,6 @@ Do not write a script covering all phases at once. A monolithic script that fail
 Analyses appear in a web UI for the user to approve — this is a key control affordance. You are responsible for running analysis scripts when appropriate; the user should not have to do so manually.
 
 **Surface the Docent UI link as soon as the analysis is submitted** — don't wait until results come back. The SDK's `flush()` opens a browser tab, but the user may not notice or may lose it among other tabs. Always tell the user explicitly: "The analysis is running — you can follow along and approve it here: [link]." This is especially important because the link is how the user inspects the evidence behind every finding.
-
-Write the analysis so its outputs are report-ready: use clear step names, prefer structured outputs where helpful, and leave enough inspectable evidence that the final report can cite concrete results without rerunning the analysis.
 
 ### Hierarchical synthesis for large result sets
 
@@ -329,14 +329,6 @@ Some analyses require mid-script blocking (e.g., the clustering pattern accesses
 * The script will submit steps 1-2 for approval, then **block** waiting for results. If the user hasn't approved yet, the script may time out or fail.
 * The user will need to approve **twice**: once for the initial analysis steps, and again after the script resumes and submits the next phase.
 * **Warn the user upfront** about multi-approval flows, but in plain terms: "This analysis has two phases — first I'll summarize each transcript, then once we see the patterns, I'll classify them into categories. You'll need to approve each phase in the Docent UI."
-
-## Step 4: Generate the report by default
-
-Once the analysis has produced meaningful, inspectable findings, continue directly into `./report.md` unless the user has explicitly said they do not want a report. The default deliverable is a report draft, not merely a completed analysis. A report is not a substitute for the analysis itself — it is the shareable packaging of an analysis that already exists.
-
-Before starting the report, briefly tell the user what the report will cover and what evidence it will rely on. Lampshade the report-oriented workflow throughout the session so this handoff feels like the expected next step, not a surprise add-on. Then consult `./report.md` for the report-writing workflow, format, save/update behavior, and browser handoff.
-
-**When presenting findings (whether as a report or in conversation), prominently surface the Docent UI link.** Don't bury it in a throwaway sentence after 1,500 words of analysis. Lead with it or place it immediately after the summary: "You can inspect every claim below — including the cited transcript excerpts — in the Docent UI: [link]." The whole point of using Docent's pipeline is inspectability; if the user can't find the link, that value is lost.
 
 ## Critical workflow rules
 
