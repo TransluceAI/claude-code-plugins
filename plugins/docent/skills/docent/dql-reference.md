@@ -9,7 +9,7 @@ Queries can only run over a single collection by design.
 Choose the right method based on context:
 
 * **`execute_dql` MCP tool** — Use for ad-hoc exploration and orientation (Step 1). Runs DQL directly without requiring user approval of inline scripts. Preferred for all exploratory queries.
-* **`client.query()`** — Use inside reading plan scripts. Auto-registers the query as a UI-visible step. Use this for DQL that feeds data into readings, or that you want the user to see alongside reading results. Pass `name="..."` to give the step a display name.
+* **`client.query()`** — Use inside analysis plan scripts. Query and results table appear in Docent UI. Use this for DQL that feeds data into readings, or that you want the user to see alongside reading results. Pass `name="..."` to give the step a display name.
 * **`client.execute_dql()`** — Use inside Python scripts for internal logic (e.g., conditional logic between reading steps, or data that feeds into scripted readings). Results are NOT shown in the Docent UI.
 
 ```python
@@ -21,7 +21,7 @@ collection_id = "<collection-uuid>"
 # (Optional) inspect available tables/columns
 schema = client.get_dql_schema(collection_id)
 
-# In reading plan scripts: query as a UI-visible step
+# In analysis plan scripts: query as a UI-visible step
 rows = client.query(
     collection_id,
     "SELECT agent_runs.id AS agent_run_id FROM agent_runs LIMIT 10",
@@ -44,11 +44,9 @@ raw_rows = client.dql_result_to_dicts(result)
 | `transcripts` | Individual transcripts tied to an agent run; stores serialized messages and per-transcript metadata. |
 | `transcript_groups` | Hierarchical groupings of transcripts for runs. |
 | `judge_results` | Scored rubric outputs keyed by agent run and rubric version. |
-| `results` | Individual LLM analysis results from result sets. |
 | `readings` | Reading definitions (template or scripted LLM analysis). |
 | `reading_results` | Results from running readings. |
 | `reading_result_links` | Junction table linking readings to their results. |
-| `analysis_sessions` | Session containers grouping readings together. |
 
 ### `agent_runs`
 
@@ -154,17 +152,6 @@ For scripted readings, `arguments_dict` holds arbitrary user-supplied metadata p
 | `reading_id` | FK to readings.id. |
 | `result_id` | FK to reading_results.id. |
 
-### `analysis_sessions`
-
-| Column | Description |
-| --- | --- |
-| `id` | Session identifier (UUID). |
-| `collection_id` | Collection that owns the session. |
-| `name` | Display name (from session_name or source script). |
-| `readings_json` | Ordered list of step entries (readings, dql_only, headings). |
-| `created_at` | When the session was created. |
-| `updated_at` | Last modification time. |
-
 ## JSON Metadata Access Patterns
 
 Docent stores user-supplied metadata as JSON. Access using Postgres operators:
@@ -254,26 +241,6 @@ HAVING COUNT(t.id) > 1
 ORDER BY transcript_count DESC;
 ```
 
-### Flagged Judge Results
-
-```sql
-SELECT
-  jr.agent_run_id,
-  jr.rubric_id,
-  jr.result_metadata->>'label' AS label,
-  jr.output->>'score' AS score
-FROM judge_results jr
-WHERE jr.result_metadata->>'severity' = 'high'
-  AND EXISTS (
-    SELECT 1
-    FROM agent_runs ar
-    WHERE ar.id = jr.agent_run_id
-      AND ar.metadata_json->>'environment' = 'prod'
-  )
-ORDER BY CAST(jr.output->>'score' AS DOUBLE PRECISION) DESC
-LIMIT 25;
-```
-
 ### Completion Rate by Environment (CTE pattern)
 
 ```sql
@@ -297,32 +264,6 @@ GROUP BY environment
 ORDER BY total_runs DESC;
 ```
 
-### Latest Rubric Scores by Model
-
-```sql
-WITH latest_scores AS (
-  SELECT
-    agent_run_id,
-    MAX(rubric_version) AS rubric_version
-  FROM judge_results
-  WHERE rubric_id = 'helpful_response_v1'
-  GROUP BY agent_run_id
-)
-SELECT
-  ar.id,
-  ar.metadata_json->'model'->>'name' AS model_name,
-  jr.output->>'score' AS score,
-  jr.result_metadata->>'label' AS label
-FROM latest_scores ls
-JOIN judge_results jr
-  ON jr.agent_run_id = ls.agent_run_id
-  AND jr.rubric_version = ls.rubric_version
-  AND jr.rubric_id = 'helpful_response_v1'
-JOIN agent_runs ar ON ar.id = jr.agent_run_id
-WHERE ar.metadata_json->>'environment' = 'prod'
-ORDER BY CAST(jr.output->>'score' AS DOUBLE PRECISION) DESC
-LIMIT 15;
-```
 
 ### Reading Results for a Specific Reading
 
@@ -346,7 +287,7 @@ LIMIT 50;
 - **Single statement**: Batches or multiple statements are rejected.
 - **Explicit projection**: Wildcard projections (`*`) are disallowed. List the columns you need.
 - **Collection scoping**: A single query can only access data within a single collection.
-- **Limit enforcement**: Every query is capped at 10,000 rows. Use pagination (`OFFSET`/`LIMIT`) for larger result sets.
+- **Limit enforcement**: Every query is capped at 10,000 rows. Use pagination (`OFFSET`/`LIMIT`) for larger row collections.
 - **JSON performance**: Heavy JSON traversal across large collections can be slow. Prefer top-level fields when available.
 - **Type awareness**: Cast values explicitly when precision matters.
 

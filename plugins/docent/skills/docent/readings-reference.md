@@ -12,11 +12,11 @@ Use scripted readings only when you need additional flexibility, e.g. varying th
 
 Readings are executed lazily: nothing runs until `flush()` is called. You normally do not need to call `flush()` manually. `flush()` is automatically called at script exit, and also anytime you attempt to access the output of a reading which has not been run yet. The system infers the execution DAG automatically. Re-running the same script is free: readings are content-addressed, so identical analyses reuse existing results.
 
-When readings are flushed, they will appear in a web UI for the user to approve. The script will pause execution until the user approves the readings. They may also cancel the script and ask you to make changes. (Note: the reading plan interface in the web UI is read-only.)
+When readings are flushed, they will appear as an analysis plan in the web UI for the user to approve. The script will pause execution until the user approves the readings. They may also cancel the script and ask you to make changes. (Note: the analysis plan interface in the web UI is read-only.)
 
 If you need a no-UI-approval flow for a trusted analysis, you may opt into SDK auto-approval by explicitly calling `client.flush(auto_approve=True)`. This reuses the same backend approval endpoint programmatically, including for dependent steps that are initially unresolved.
 
-Some reading plans require mid-script blocking, for example if one step waits for reading results (using `.results`) in order to construct a later step. In these cases:
+Some analysis plans require mid-script blocking, for example if one step waits for reading results (using `.results`) in order to construct a later step. In these cases:
 * The script may submit an initial set of steps for approval, then block waiting for results before it can continue.
 * The user may need to approve the plan more than once, unless you explicitly call `client.flush(auto_approve=True)` for each flush that should bypass manual approval.
 * Warn the user upfront about multi-approval flows so they know what to expect.
@@ -31,8 +31,6 @@ You should feel free to iterate on your scripts, but avoid overwriting scripts w
 * Extend your analysis on the same topic with an additional reading -> modify existing script and re-run
 * Explore a new question on the same dataset -> create a new script
 * Take a different approach to the same question -> create a new script
-
-Note: an obsolete version of the SDK provided an API called `LLMRequest`. If you encounter old code using LLMRequests, you can offer to migrate it to readings.
 
 ## Core API
 
@@ -69,12 +67,13 @@ reading = client.read(
 
 For `ARRAY_AGG` columns, pass `is_list=True`:
 ```python
-# agg = client.query(collection_id, f"SELECT array_agg(rr.id) AS results FROM reading_results rr ...")
+# agg = client.query(collection_id, f"SELECT array_agg(rr.id ORDER BY rr.id) AS results FROM reading_results rr ...")
 reading = client.read(
     prompt_template=["Synthesize these results: ", agg.results.as_type("reading_result", is_list=True)],
     model="openai/gpt-5.4-mini",
 )
 ```
+(Note: the ORDER BY is important. Without an ORDER BY, Postgres may later return results in a different order, invalidating the cache and triggering an expensive LLM call. If there's no natural order, you can order by ID.)
 
 **Scripted path** (explicit per-request prompts):
 ```python
@@ -100,10 +99,15 @@ Parameters:
 - `reasoning_effort`: Optional `"minimal"` | `"low"` | `"medium"` | `"high"`
 - `max_new_tokens`: Optional maximum number of new tokens to generate per result
 - `collection_id`: Optional collection override (useful for scripted readings that don't infer it from a QueryResult)
-- `cache_mode`: Controls caching granularity. The DQL query (if any) is always executed to resolve arguments regardless of cache mode. The content hash — covering prompt template, context config, model config, output schema, token limit, and resolved arguments — determines reading identity.
-  - `"reading"` (default): reuse an existing reading with matching content hash
-  - `"results"`: always create a new reading record, but reuse individual results to avoid redundant LLM calls
-  - `"none"`: no caching — force full re-evaluation
+- `cache_mode`: Controls caching granularity. See below
+
+### Cache modes
+The DQL query (if any) is always executed to resolve arguments regardless of cache mode. The content hash — covering prompt template, context config, model config, output schema, token limit, and resolved arguments — determines reading identity.
+- `"reading"` (default): reuse an existing reading with matching content hash
+- `"results"`: always create a new reading record, but reuse individual results to avoid redundant LLM calls
+- `"none"`: no caching — force full re-evaluation
+
+Note: if some results for a reading succeeded and some errored, rerunning with cache_mode="reading" will not retry the errored results. This avoids wasting time retrying problematic prompts (e.g. too long, or blocked by LLM API safety filters). If you need to force retry all errored results, run with cache_mode="results".
 
 ### Transcript slices
 
@@ -294,9 +298,6 @@ Glob filter rules:
 * Common pitfall: do not set `transcript_group_names=GlobFilter(include=("*",))` when the user asks to render only a specific transcript name. Including all transcript groups makes all visible descendants render, so it can override the intended narrow transcript selection. In that case, make `transcript_group_names` exclude-all and set only `transcript_names=GlobFilter(include=("<requested transcript name>",))`.
 * Transcript group filtering is path-scoped. Including a nested group makes that group and its visible descendants render, and any ancestors needed to reach it may render as wrappers. It does not make sibling branches visible. For example, if `G1` contains both `G2 -> G3` and `G2-prime`, including `G3` can render wrapper groups `G1` and `G2`, but `G2-prime` remains hidden unless it or one of its descendants is independently included.
 
-### `client.show_query_result(query_result, name=None)` *(deprecated)*
-Deprecated — `client.query()` now auto-registers a DQL-only step in the UI. Use the `name` parameter on `query()` instead. This method is a no-op for backwards compatibility.
-
 ### `client.step_group(label) -> StepGroupContext`
 Opens a labeled step group in the session UI. Use as a context manager to auto-close the group scope:
 ```python
@@ -356,15 +357,15 @@ Submits all pending readings to the server. Returns `plan_id` and per-entry `ent
 client.plan_name = "safety_failure_clustering"  # Defaults to name of script
 ```
 
-Note: reading plans are grouped by name.
-* If you create a new plan with the same name as an existing plan, it will be saved as a new version of the existing plan. Therefore, when you create a reading plan, give it a reasonably specific name to reduce chances of a collision.
-* If you change the name of an existing reading plan, the new version will be saved as separate and unrelated. Therefore, you should avoid renaming reading plans unnecessarily.
+Note: analysis plans are grouped by name.
+* If you create a new plan with the same name as an existing plan, it will be saved as a new version of the existing plan. Therefore, when you create an analysis plan, give it a reasonably specific name to reduce chances of a collision.
+* If you change the name of an existing analysis plan, the new version will be saved as separate and unrelated. Therefore, you should avoid renaming analysis plans unnecessarily.
 
 ### Default collection ID
 ```python
 client.default_collection_id = "<collection-uuid>"
 ```
-Used as a fallback when `flush()` resolves which collection to target. Automatically set from `DOCENT_COLLECTION_ID` in `docent.env` or the environment if present. Can also be passed to the `Docent()` constructor as `collection_id`.
+Used as a fallback when `flush()` resolves which collection to target. Automatically set from `DOCENT_COLLECTION_ID` in the SDK-discovered `docent.env` or the environment if present. Can also be passed to the `Docent()` constructor as `collection_id`.
 
 ### Auto-flush
 On first `read()` call, an `atexit` handler is registered. Disable with `client.auto_flush = False`.
@@ -396,7 +397,7 @@ If you need structured output, you may provide a JSON schema.
 
 String fields may optionally allow the LLM to cite parts of its input.
 * Fields such as "summary" or "description" or "explanation" should usually have citations.
-* Do not include citations for fields such as "category", "classification" or any other field which is likely to be filtered on downstream.
+* Enum fields must not have citations.
 * "Reasoning" fields should come before "decision" fields. That way, the LLM is generating the decision based on the reasoning, instead of justifying its decision post-hoc.
 
 ```python
@@ -420,7 +421,6 @@ The quality of reading output depends on the quality the prompt you write. The L
 * How detailed or brief should output be? A short paragraph is a good default, but it depends on the nature of the analysis.
 * If you're asking for extensive (multi-paragraph) response, how should it be structured? Note: markdown is supported
 * If you are looking for a particular behavior, how exactly is that behavior defined? If you're proposing a specific definition, make sure the user signs off on it.
-* If you are asking the LLM to analyze other reading results, remind it to cite those reading results, NOT the original transcripts which the results may refer to.
 
 ## Chosing clear names
 The name of each step (client.query and client.read) should fit on one line. Subject to that constraint, make step names descriptive. Ideally, the names make sense to a user without much context on your analysis. A descriptive name does not have to be wordy.
@@ -497,7 +497,7 @@ summarize = client.read(
 # Step 2: Propose clusters from the summaries
 summaries = client.query(
     collection_id,
-    f"SELECT array_agg(rr.id) AS summaries "
+    f"SELECT array_agg(rr.id ORDER BY rr.id) AS summaries "
     f"FROM reading_results rr "
     f"JOIN reading_result_links rrl ON rrl.result_id = rr.id "
     f"WHERE rrl.reading_id = '{summarize}' ",
@@ -553,7 +553,7 @@ print(f"Proposed {len(category_names)} clusters: {', '.join(category_names)}")
 
 **Stop here.** Run this script, review the proposed clusters, and report them to the user. If the clusters look right, proceed to Phase 2. If not, adjust the summarization prompt or sample and re-run. Re-running is free for unchanged steps (results are cached).
 
-**If something goes wrong:** Check DQL query syntax first (see `dql-reference.md` quirks). Common issues: missing `is_list=True` on aggregated columns, or an empty result set from the sample query. If the clusters are too broad or too narrow, adjust the number of requested categories in the Step 2 prompt or focus the summarization prompt on a more specific aspect of behavior.
+**If something goes wrong:** Check DQL query syntax first (see `dql-reference.md` quirks). Common issues: missing `is_list=True` on aggregated columns, or no rows returned by the sample query. If the clusters are too broad or too narrow, adjust the number of requested categories in the Step 2 prompt or focus the summarization prompt on a more specific aspect of behavior.
 
 ### Phase 2: Classify using the proposed clusters
 
@@ -586,3 +586,13 @@ extract = client.read(
 ```
 
 Run the extended script. Steps 1-2 are cached and won't re-run — only Step 3 executes. The user approves the classification step, and results come back.
+
+## Example: hierarchical synthesis
+
+When synthesizing more than ~30 reading results into a single analysis, do NOT put all results into one prompt. Instead:
+
+1. **Batch**: Split results into groups of 15-20 using DQL (e.g., `LIMIT 20 OFFSET 0`, `LIMIT 20 OFFSET 20`, etc.)
+2. **Summarize each batch**: Run a synthesis reading per batch that produces a structured intermediate summary
+3. **Final synthesis**: Aggregate the batch summaries (which are now ~5-10 items) into a single final reading
+
+Alternatively, if the per-item readings produce structured output (e.g., categories/enums), use DQL aggregation over `reading_results.output` to produce counts and distributions — this avoids context limits entirely and gives exact numbers.

@@ -18,7 +18,7 @@ Use the report feature when:
 Do NOT use reports as a substitute for the analysis itself. First run the analysis using the Docent analysis skill, then generate the report from the results.
 
 **Preconditions:**
-- Reports are created from reading plans. If there is no reading plan ID, tell the user they need to provide one.
+- Reports are created from analysis plans. If there is no analysis plan ID, tell the user they need to provide one.
 - The user should be fairly clear about what they want the report to cover. If the scope, question, or audience is not clear enough to operationalize, ask before drafting.
 - Unless the user specifies another location, write the report markdown file in the current working directory.
 
@@ -31,7 +31,7 @@ These should shape every decision about what to include and how to structure the
 The point of a report is to surface highly verifiable, traceable, actionable, and important insights for readers who are trying to make consequential decisions about agent behavior.
 
 - **Verifiable**: every meaningful claim should be backed by adjacent evidence, such as a DQL table, a reading result embed, or a citation to the exact underlying object.
-- **Traceable**: a reader should be able to follow a claim back to the exact reading plan, step, result, DQL query, or transcript that supports it.
+- **Traceable**: a reader should be able to follow a claim back to the exact analysis plan, step, result, DQL query, or transcript that supports it.
 - **Important**: focus on findings that are consequential for the user's terminal goal, such as improving performance, reducing unsafe behavior, or making some other important behavior change. Findings that happen only a tiny fraction of the time are usually not report-worthy unless the user explicitly says they matter.
 - **Actionable**: recommendations must be specific enough to imply an intervention the user can make to the agent. Only include them when there is a strong, coherent, and sound argument that the intervention should improve the observed behavior.
 
@@ -60,7 +60,7 @@ The reader can now verify the "strategy differences dominate" claim by inspectin
 
 ### No platform jargon
 
-Do not use platform jargon ("reading plan," "DQL," "reading result") in report prose visible to the reader. Use plain descriptions ("analysis," "query," "result"). Platform terminology is fine in shortcode attributes and developer-facing code.
+Do not use platform jargon ("analysis plan," "DQL," "reading result") in report prose visible to the reader. Use plain descriptions ("analysis," "query," "result"). Platform terminology is fine in shortcode attributes and developer-facing code.
 
 ---
 
@@ -191,7 +191,7 @@ Attributes:
 Behavior: Uses the page's `collection_id` automatically. Shows row count, execution time, truncation info, and a toggle to show/hide the raw DQL.
 
 Authoring guidance:
-- Keep queries short, explicit, and cheap. Add `LIMIT` unless the full result set is needed.
+- Keep queries short, explicit, and cheap. Add `LIMIT` unless every row is genuinely needed.
 - Use the body to explain why this table matters, not to restate column names.
 - **Key pattern**: aggregate reading results via DQL rather than stating numbers in prose. A `::dql-table` computing a distribution is always preferable to "52% are X" in text, because the reader can inspect the query.
 
@@ -231,11 +231,7 @@ Use inline citations inside markdown sentences to link claims to specific eviden
 This claim is grounded in ::citation{type="reading_result" collection_id="collection-uuid" reading_result_id="reading-result-uuid"}.
 ```
 
-Use `short="true"` for a compact icon-only citation:
-
-```md
-See ::citation{type="analysis_result" collection_id="collection-uuid" result_set_id="result-set-uuid" result_id="result-uuid" short="true"} for details.
-```
+Use `short="true"` for a compact icon-only citation.
 
 Rules:
 - This is inline text, not a block shortcode.
@@ -254,7 +250,6 @@ Rules:
 
 | Type | Required fields | Optional fields |
 |---|---|---|
-| `analysis_result` | `result_set_id`, `result_id` | |
 | `reading_result` | `reading_result_id` | |
 | `block_content` | `agent_run_id`, `transcript_id` | `block_idx` (default `0`), `content_idx` |
 | `agent_run_metadata` | `agent_run_id`, `metadata_key` | |
@@ -271,7 +266,7 @@ Use inline citations sparingly — they are most valuable for anchoring specific
 
 A strong report usually follows this shape:
 
-1. Start with a single-`#` H1 at the very top, then a short intro. The UI renders pill-style links to the collection and reading plan beneath the H1 using the frontmatter IDs — you do not need to author those links.
+1. Start with a single-`#` H1 at the very top, then a short intro. The UI renders pill-style links to the collection and analysis plan beneath the H1 using the frontmatter IDs — you do not need to author those links.
 2. Follow the intro with headings and short narrative that states a question or claim.
 3. Put the supporting `::dql-table`, `::reading-result`, `::reading-results-table`, and/or inline citations immediately next to that claim.
 4. Use `::callout` for a key takeaway, caveat, or recommendation only when adjacent evidence already supports it.
@@ -324,7 +319,7 @@ Reference material for getting data into the report and saving it to Docent.
 
 ## MCP endpoints
 
-- `get_reading_plan_results(collection_id, plan_name)` — reading plan overview with step statuses and result counts.
+- `get_reading_plan_results(collection_id, plan_name)` — analysis plan overview with step statuses and result counts.
 - `get_reading_plan_results(collection_id, plan_name, step_name)` — concrete outputs for a specific step.
 - `get_metadata_fields(collection_id)` — helps when you need tables grouped or filtered by run metadata.
 - `list_reading_presets(collection_id, owned_only=True)` — useful when a report needs to contextualize preset-backed readings. Set `owned_only=False` to inspect all collection presets.
@@ -333,11 +328,11 @@ Reference material for getting data into the report and saving it to Docent.
 
 ## SDK methods
 
-- `client.list_reading_plans(collection_id, name=..., owned_only=True)` — find matching reading plans. Pass `owned_only=False` to search all visible plans.
+- `client.list_reading_plans(collection_id, name=..., owned_only=True)` — find matching analysis plans. Pass `owned_only=False` to search all visible plans.
 - `client.get_reading_plan(collection_id, plan_id)` — full plan with step metadata, reading IDs, DQL step definitions.
 - `client.get_reading_results(collection_id, reading_id)` — raw reading results for qualitative inspection.
 - `client.execute_dql(collection_id, dql, reading_plan_id=plan_id)` plus `client.dql_result_to_dicts(...)` — materialize DQL-backed evidence tied to the plan.
-- `client.query(...)` — supplemental quantitative support. Keep the report anchored to the cited reading plan.
+- `client.query(...)` — supplemental quantitative support. Keep the report anchored to the cited analysis plan.
 
 ## Persisting reports
 
@@ -438,11 +433,11 @@ The moment you type a number in a markdown section, ask yourself: is there a DQL
 - Do not expect block shortcodes to work inside HTML embeds.
 - Do not rely on inline citations inside code fences or inline code.
 - Do not add `collection_id` to block shortcodes — they use the page's collection automatically. Do include `collection_id` on inline `::citation` shortcodes.
-- Do not omit `LIMIT` in `::dql-table` queries unless the full result set is genuinely needed.
+- Do not omit `LIMIT` in `::dql-table` queries unless every row is genuinely needed.
 
 ### Other mistakes
 
-- Do not start a report without a reading plan ID.
+- Do not start a report without an analysis plan ID.
 - Do not guess the report scope when the user's request is not clear enough.
 - Do not elevate a vanishingly rare edge case into a headline finding unless the user explicitly cares about it.
 - Do not recommend interventions unless you can explain why that intervention should improve the observed behavior.
