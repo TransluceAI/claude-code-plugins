@@ -3,800 +3,191 @@ name: ingestion
 description: Structured workflow for ingesting agent run data into Docent. Use when the user wants to upload evaluation logs or agent transcripts to Docent. Triggers on phrases like "ingest into Docent", "upload to Docent", "import runs to Docent", or when working with agent evaluation data that needs to be loaded into Docent for analysis.
 ---
 
-# **Docent Ingestion Skill**
+# Docent Ingestion Skill
 
-This skill provides a structured workflow for converting transcripts and evaluation logs into the correct format for ingestion to Docent, an agent analysis tool.
+Use this workflow to convert local transcripts, agent logs, or evaluation traces into Docent `AgentRun` data and upload them to a Docent collection.
 
-## **Overview of Docent**
+Keep the main workflow lightweight. Load `./ingestion-reference.md` only when you need concrete SDK examples, conversion snippets, source-inspection helpers, or examples for Inspect AI, tool calls, pass@k, branching, or multi-agent data.
 
-Docent is a trace analysis tool that helps researchers analyze and debug agents. Researchers upload a “collection” of traces (“agent runs”) into Docent, where the tool enables them to:
+## Core Rules
 
-* Engage in structured data analysis such as grouping and joining to understand trends and create charts
-* Quickly view traces of interest and capture human annotations of traces through labeling and comments
-* Run a semantic search over transcripts by running a user-provided query of each transcript in their collection, and the cluster the results to understand high-level patterns
-* Draft, refine, and iterate with the user on detailed rubrics to capture fuzzy behaviors like sycophancy, cheating, verbosity, etc.
+- Work in four stages: context, planning, ingestion, verification.
+- Create and maintain `ingestion-plan.md` in the working directory.
+- Do not upload until the user confirms the proposed collection name, Docent hierarchy, field mappings, and omitted data.
+- Never silently skip source data. Any file or field not ingested must be documented with a reason and expected impact.
+- Save ingestion code to a file such as `ingest.py` or `ingest_<collection_name>.py`; do not rely on one-off inline Python for the final upload path.
+- Use `parse_chat_message` from the Docent SDK for transcript messages, and make deliberate role mappings when the source roles differ from Docent's supported roles.
+- Run deterministic `AgentRun` sanity checks before upload and resolve obvious conversion problems.
 
-Docent accelerates researchers by helping them form hypotheses and directing them to read the most relevant transcripts. Researchers use Docent to qualitatively explain and understand shifts in quantitative metrics. Common use cases for Docent include:
+## When Triggered
 
-* Comparing between two checkpoints to understand a regression or to understand a quantitative tradeoff in their benchmark results
-* Understanding an unexpected result. For instance, investigating why a checkpoint that receives high reward from a preference model (e.g. for code quality) appears to perform poorly with real users (e.g. PRs frequently rejected for low quality)
-* Surfacing previously unknown failure modes. For instance, noticing that the timeout constraint is not explicit in an evaluation, causing thinking models to perform poorly compared to their non-thinking counterparts
+If the user asks to "ingest", "upload", "import", or "move" traces, transcripts, or eval logs into Docent, briefly offer this structured workflow:
 
-## **When to Offer This Workflow**
+1. Gather context and credentials.
+2. Inspect the data and propose a Docent organization.
+3. Write and run an ingestion script.
+4. Verify uploaded counts and warnings.
 
-**Trigger conditions**:
-The user mentions phrases like "ingest transcripts into Docent", "upload to Docent", "import runs to Docent,” “move data into Docent,” “upload traces to Docent”
+If the user accepts or directly asks you to proceed, start Stage 1. If they decline, work freeform.
 
-### **Initial offer:**
+## Stage 1: Context
 
-Offer the user a structured workflow for ingesting their transcripts into Docent. Briefly explain the four stages:
+Before Python work, use an existing virtual environment if present. If no environment is active and `docent-python` is unavailable, ask before installing it.
 
-1. **Context gathering**: User provides relevant context on their data, including the path to the data, how it was produced, and what kinds of analysis they would like to do
-2. **Planning**: Understand how the user’s data is organized, plan an ingestion strategy, and recommend a suggested organization in Docent to the user. Surface the plan for user approval.
-   1. Examine the overall data hierarchy by mapping the directory and file structure to understand if there are recurring patterns.
-   2. For individual transcripts, identify all unique formats and create a template for ingesting each one. Map out a schema of each unique transcript format and map each field to the most appropriate class in Docent.
-   3. Propose an organization structure in Docent (broken down into collections, agent runs, transcript groups, and transcripts) that fits the user’s analysis needs.
-3. **Ingestion:** Given the suggested organization, plan how, write, and test a script that uploads all data from the user-provided directory to Docent.
-4. **Testing**: After uploading to a collection in Docent, use the Docent SDK to pull down the collection data and verify that the metadata, transcript formats, and overall organization match expectations.
+Collect only what is needed to plan:
 
-Explain that you will ingest all the data provided in a directory of the user’s choosing. Explain the ask for context on the user’s analysis: while explaining is optional, it helps structure the data in Docent. Ask if they want to try this workflow or proceed freeform.
+- API key: prefer `$DOCENT_API_KEY` or an SDK-discovered `docent.env` (current directory upward, then `~/.docent/docent.env`); ask only if neither is available.
+- Data path: the file or directory to ingest.
+- Optional context: what produced the data and what analysis the user wants to do in Docent.
 
-If the user declines, work freeform. If the user accepts, proceed to Stage 1\.
+Create `ingestion-plan.md` with this compact structure and append findings as the workflow proceeds:
 
-## **Stage 1: Context Gathering**
-
-### **Environment Setup**
-
-Before running any Python commands, check for and activate a virtual environment:
-
-```shell
-if [ -d "venv" ]; then
-    source venv/bin/activate
-elif [ -d ".venv" ]; then
-    source .venv/bin/activate
-fi
-```
-
-If there is no virtual environment present, prompt the user if they want to activate one
-and proceed accordingly.
-
-Ensure the Docent SDK is installed. The package name is `docent-python`:
-
-```shell
-pip install docent-python
-```
-
-### **Gathering Information**
-
-Collect only the essential information needed to start planning:
-
-- **API Key:** Check if `$DOCENT_API_KEY` is set in the environment or in a `docent.env` file. If not, ask: What is your Docent API key? (You can find or create one at: [https://docent.transluce.org/settings/api-keys](https://docent.transluce.org/settings/api-keys))
-- **Data Path:** What is the path to the files or directory you want to ingest?
-
-Once you have the data path, proceed to Stage 2 to analyze the data and create an ingestion plan. You will ask the user to confirm all details (including collection name, data context, and analysis goals) after presenting the plan.
-
-Create `ingestion-plan.md` in the working directory to log all decisions and findings throughout the workflow. Here is an example structure:
-
-```
+```markdown
 # Docent Ingestion Plan
 
 ## Configuration
-- Data path: [from user]
+- Data path:
+- API key source:
 
-## File Analysis
-[to be filled in Stage 2a]
+## Source Analysis
+- File structure:
+- Detected formats:
+- Expected source record count:
 
-## Schema
-[to be filled in Stage 2b]
+## Docent Model Orientation
+- Documentation reviewed:
+- Important SDK/model assumptions:
 
-## Data Structure Proposal
-[to be filled in Stage 2c]
+## Proposed Docent Structure
+- Collection:
+- AgentRun unit:
+- TranscriptGroup usage:
+- Transcript usage:
 
 ## Field Mapping
-[to be filled in Stage 2c]
+| Source | Docent target | Notes |
+| --- | --- | --- |
 
 ## Omitted Data
-[MUST document any data not ingested and why]
+| Field/File | Reason | Impact |
+| --- | --- | --- |
 
-## Plan Confirmation
-- Collection name: [proposed, confirmed by user]
-- Data context: [your understanding, confirmed by user]
-- Analysis goals: [from user]
+## Confirmation
+- Collection name:
+- Data context:
+- Analysis goals:
+- User confirmed:
 
 ## Execution Log
-[to be filled in Stage 3]
 
 ## Verification
-[to be filled in Stage 4 - compare expected vs actual counts]
+- Source records:
+- Converted:
+- Failed conversions:
+- Uploaded:
+- Sanity warnings:
+- Collection URL:
 ```
 
----
+## Stage 2: Planning
 
-## **Stage 2: Planning**
+### Orient on Docent Models
 
-### **Stage 2a: Understanding File Structure**
+Before designing the ingestion shape, review the ingestion-side SDK models and docs:
 
-Build understanding of the data organization to understand holistically how the user is storing their data and why they chose to organize it that way. Consider how this reflects on how they want their data stored in Docent. You can quickly get a sense of the data by using the appropriate strategies below.
+- Online SDK documentation: https://docs.transluce.org/llms.txt
+- Local examples and snippets, as needed: `./ingestion-reference.md`
 
-#### Build Structural Tree
+At minimum, understand:
 
-You can generate a folder-only tree with the following script, to see the overall directory structure. You may want to strategically list individual files in a few folders to understand them as well.
+- `Collection`, `AgentRun`, `TranscriptGroup`, and `Transcript`
+- Message classes, `parse_chat_message`, supported roles, tool calls, and tool responses
+- How the source represents reasoning, such as visible reasoning text, structured
+  summaries, opaque blobs, or split assistant fragments
+- Where structured values belong: usually `AgentRun.metadata`, `Transcript.metadata`, scores, identifiers, and grouping fields
+- ID behavior: the SDK assigns `AgentRun` IDs automatically
 
-```py
-import os
-from pathlib import Path
-from collections import Counter
+### Analyze Source Data
 
-def build_folder_tree(path: str, max_depth: int = 5) -> dict:
-    """Build a tree of folder structure, detecting patterns."""
-    path = Path(path)
+Inspect the data path enough to identify the repeatable unit that should become an `AgentRun`.
 
-    def _recurse(p: Path, depth: int) -> dict:
-        if depth > max_depth or not p.is_dir():
-            return None
+Look for:
 
-        children = {}
-        file_extensions = Counter()
+- Directory organization: experiment, model, checkpoint, date, task, sample, attempt, phase
+- File formats: JSON, JSONL, Inspect `.eval`, logs, configs, metadata files
+- Repeated templates: the same set of files or folders repeated across samples or experiments
+- Transcript fields: `messages`, `conversation`, `dialogue`, `turns`, `traj`, `trajectory`
+- Score and result fields: `score`, `reward`, `accuracy`, `correct`, `success`, `metric`, `result`
+- Identifiers and grouping keys: `task_id`, `sample_id`, `episode`, `run_id`, `uuid`
+- Special structures: pass@k attempts, tree/branching traces, multi-agent episodes, tool call sequences
 
-        for item in sorted(p.iterdir()):
-            if item.is_dir():
-                children[item.name] = _recurse(item, depth + 1)
-            else:
-                file_extensions[item.suffix.lower() or "no_ext"] += 1
+If Inspect `.eval` files are present, prefer the built-in Inspect loader. For mixed or unclear data, summarize your best interpretation and ask the user to confirm before coding.
 
-        return {
-            "children": children,
-            "file_counts": dict(file_extensions),
-            "total_files": sum(file_extensions.values()),
-        }
+### Propose Docent Structure
 
-    return _recurse(path, 0)
-```
+Most Docent analysis features, including rubrics, search, and clustering, operate at the `AgentRun` level. Structure data so each `AgentRun` is a meaningful analysis unit.
 
-Understanding what individual files are in a few folders may also be useful. List files in key directories to understand the naming conventions and file types present.
+| Level | Use |
+| --- | --- |
+| `Collection` | One experiment, benchmark run, dataset, or cohesive ingestion batch |
+| `AgentRun` | The primary item to analyze, compare, search, label, or score |
+| `TranscriptGroup` | Attempts or phases within one `AgentRun`, such as pass@k |
+| `Transcript` | One conversation history; use multiple transcripts for multi-agent runs |
 
-#### Detect Naming Patterns
+Default: if unsure, make each independent task, episode, sample, or branch its own `AgentRun` with one `Transcript`.
 
-Examine folder and file names to understand the organizational logic. Sample a few names at different levels of the hierarchy and reason about what they might represent.
+For tree or branching data, usually ingest each branch as its own `AgentRun` and use metadata such as `root_task_id`, `branch_id`, `parent_branch_id`, and `branch_depth` to preserve relationships.
 
-Common patterns to look for (as suggestions, not strict rules):
+### Confirmation Gate
 
-- **Dates:** ISO format (2024-01-15), compact (20240115), or human-readable (jan\_15)
-- **Model identifiers:** Model names, versions, or checkpoints
-- **Sequential numbering:** run\_001, sample\_42, task\_5, episode\_100
-- **Experiment tags:** baseline, ablation, v2, control, treatment
-- **Subdirectory conventions:** trajs/, logs/, results/, metadata/, configs/
+Before writing the final upload script, present the plan and wait for user confirmation. Include:
 
-Rather than pattern-matching, describe what you observe and hypothesize about the user's organizational intent. For example:
+- Source structure and detected data type
+- Proposed collection name
+- Proposed `Collection` / `AgentRun` / `TranscriptGroup` / `Transcript` structure
+- Key field mappings for messages, scores, identifiers, and metadata
+- Any omitted files or fields, with reason and impact
+- Expected source record count, if available
+- Your understanding of the data context and analysis goals
 
-- "Folders appear to be organized by date, then by model name"
-- "Each subfolder contains a `trajs/` directory with JSON files and a `config.yaml`"
-- "File names include what looks like a task ID followed by an attempt number"
+## Stage 3: Ingestion
 
-When listing out messages, you must use `parse_chat_message` from the Docent SDK. This means that you must
-make an informed decision on each role that is provided and map it to one of the supported roles in Docent,
-since the data provided might not use the same roles.
+For Inspect `.eval` files, use the built-in loader and proceed directly to sanity checks. See `./ingestion-reference.md` for the import pattern.
 
-Ask the user to confirm your interpretation if uncertain.
+For custom data:
 
-#### Identify Repeatable Templates
+1. Write an ingestion script to the filesystem.
+2. Load raw source records according to the confirmed file structure.
+3. Convert a small sample into `AgentRun` objects.
+4. Manually inspect sample turns with reasoning and tool calls to verify reasoning
+   was represented, merged, or intentionally omitted according to the plan.
+5. Fix sample conversion issues.
+6. Convert the full dataset and record conversion failures.
+7. Run `check_agent_runs(agent_runs)` and inspect the formatted report.
+8. Upload only after the conversion output and warnings match the confirmed plan.
 
-Find the structural unit that repeats across the directory (e.g., each experiment folder has the same subdirectory structure):
+If a failure is not easily recoverable, such as unexpected data shape, authentication failure, API error, or ambiguous SDK error, stop and ask the user how they want to proceed. Include the exact error and the affected file or record when possible.
 
-```py
-def find_repeatable_template(tree: dict) -> dict:
-    """Find the pattern that repeats across the directory structure."""
+### Sanity Checks
 
-    def get_structure_signature(node: dict) -> tuple:
-        if node is None:
-            return ()
-        children = node.get("children", {})
-        child_names = tuple(sorted(children.keys()))
-        file_exts = tuple(sorted(node.get("file_counts", {}).keys()))
-        return (child_names, file_exts)
+`check_agent_runs` warnings are not necessarily schema errors, but they often reveal conversion mistakes. Fix warnings caused by data shaping. For warnings that may be legitimate, summarize categories, counts, and representative examples, then ask whether they are expected.
 
-    signatures = {}
-    def collect_signatures(node: dict, path: str = ""):
-        if node is None:
-            return
-        sig = get_structure_signature(node)
-        if sig not in signatures:
-            signatures[sig] = []
-        signatures[sig].append(path)
-        for name, child in node.get("children", {}).items():
-            collect_signatures(child, f"{path}/{name}")
+Deterministic checks do not fully validate reasoning handling. Inspect source
+reasoning during sample conversion, especially when the source stores reasoning
+outside normal assistant text or splits reasoning from the answer/tool-call turn.
 
-    collect_signatures(tree)
+Document any accepted warnings in `ingestion-plan.md` with counts and justification.
 
-    repeated = [(sig, paths) for sig, paths in signatures.items()
-                if len(paths) > 1 and sig[0]]
+## Stage 4: Verification
 
-    if repeated:
-        repeated.sort(key=lambda x: len(x[1]), reverse=True)
-        return {
-            "template_structure": repeated[0][0],
-            "instance_count": len(repeated[0][1]),
-            "example_paths": repeated[0][1][:3],
-        }
-    return {"template_structure": None, "note": "No repeating pattern found"}
-```
+After upload, verify and log:
 
-#### Detect Inspect AI Files
+- Source records discovered
+- Records converted successfully
+- Conversion failures and representative errors
+- Agent runs uploaded to Docent
+- Whether source, converted, and uploaded counts match expectations
+- Any accepted sanity warnings
+- Collection URL
 
-Check for Inspect AI `.eval` files, which have a dedicated loader:
-
-```py
-def detect_inspect_files(path: Path) -> list[str]:
-    """Detect Inspect .eval files that can use the built-in loader."""
-    return [str(f) for f in path.rglob("*.eval")]
-```
-
-If Inspect `.eval` files are detected, use the built-in loader (see Stage 3).
-
-#### Decision Point
-
-Based on the structural analysis, determine next steps:
-
-| Structure Pattern | Action |
-| :---- | :---- |
-| Clear repeating template with trajs/logs subdirs | Proceed to schema inference on representative samples |
-| Flat directory with consistent file types | Sample files directly for schema |
-| Mixed/unclear structure | Ask user for clarification |
-| Inspect .eval files present | Use built-in Inspect loader |
-| No recognizable data files | Ask user to confirm path |
-
-Log the structural analysis to `ingestion-plan.md`.
-
----
-
-### **Stage 2b: Schema Inference**
-
-Sample files strategically based on the template structure identified in Stage 2a.
-
-#### Strategic Sampling
-
-```py
-def sample_files_strategically(path: Path, template_info: dict) -> list[Path]:
-    """Sample files from representative locations within the template structure."""
-    samples = []
-
-    if template_info.get("example_paths"):
-        for instance_path in template_info["example_paths"][:2]:
-            instance = path / instance_path.lstrip("/")
-            for subdir in ["trajs", "trajectories", "logs", "results", ""]:
-                candidate = instance / subdir if subdir else instance
-                if candidate.exists():
-                    json_files = list(candidate.glob("*.json"))[:1]
-                    jsonl_files = list(candidate.glob("*.jsonl"))[:1]
-                    samples.extend(json_files + jsonl_files)
-                    if samples:
-                        break
-
-    if not samples:
-        samples = list(path.rglob("*.json"))[:3] + list(path.rglob("*.jsonl"))[:2]
-
-    return samples[:5]
-```
-
-#### Infer Schema
-
-```py
-def infer_json_schema(data: dict | list, max_depth: int = 5) -> dict:
-    """Recursively infer schema from JSON data."""
-    if max_depth == 0:
-        return {"type": "any", "note": "truncated"}
-
-    if isinstance(data, dict):
-        return {
-            "type": "object",
-            "fields": {
-                k: infer_json_schema(v, max_depth - 1)
-                for k, v in data.items()
-            }
-        }
-    elif isinstance(data, list):
-        if not data:
-            return {"type": "array", "items": "unknown"}
-        item_schemas = [infer_json_schema(item, max_depth - 1) for item in data[:3]]
-        return {"type": "array", "items": item_schemas[0], "sample_count": len(data)}
-    else:
-        return {"type": type(data).__name__, "example": repr(data)[:100]}
-```
-
-#### Classify Fields
-
-Identify fields that indicate transcript content, scores, and metadata:
-
-```py
-TRANSCRIPT_INDICATORS = ["messages", "conversation", "transcript", "dialogue", "turns", "traj", "trajectory"]
-SCORE_INDICATORS = ["score", "reward", "accuracy", "correct", "success", "metric", "result"]
-ID_INDICATORS = ["id", "task_id", "sample_id", "episode", "run_id", "uuid"]
-
-def classify_fields(schema: dict) -> dict:
-    """Classify fields by their likely purpose."""
-    classified = {"transcript": [], "scores": [], "identifiers": [], "metadata": []}
-
-    def check_field(name: str, field_schema: dict, path: str = ""):
-        full_path = f"{path}.{name}" if path else name
-        name_lower = name.lower()
-
-        if any(ind in name_lower for ind in TRANSCRIPT_INDICATORS):
-            classified["transcript"].append(full_path)
-        elif any(ind in name_lower for ind in SCORE_INDICATORS):
-            classified["scores"].append(full_path)
-        elif any(ind in name_lower for ind in ID_INDICATORS):
-            classified["identifiers"].append(full_path)
-        else:
-            classified["metadata"].append(full_path)
-
-        if field_schema.get("type") == "object":
-            for sub_name, sub_schema in field_schema.get("fields", {}).items():
-                check_field(sub_name, sub_schema, full_path)
-
-    for name, field_schema in schema.get("fields", {}).items():
-        check_field(name, field_schema)
-
-    return classified
-```
-
-Log schema and field classification to `ingestion-plan.md`.
-
----
-
-### **Stage 2c: Docent Organization Proposal**
-
-Propose how to organize the data in Docent based on the user's analysis goals and data structure.
-
-#### Docent Hierarchy Best Practices
-
-**Critical:** Most Docent analysis features (rubrics, search, clustering) operate at the **AgentRun level**. Structure data accordingly:
-
-| Level | Purpose | When to Use |
-| :---- | :---- | :---- |
-| **Collection** | One experiment, benchmark run, or dataset | Usually one per ingestion; multiple if fundamentally different experiments |
-| **AgentRun** | Primary analysis unit | One per complete unit you want to analyze, compare, or score. Rubrics run here. Search returns these. |
-| **TranscriptGroup** | Logical groupings within an AgentRun | Multiple attempts (pass@k), phases of a task |
-| **Transcript** | One agent's conversation history | One per agent in multi-agent setups; otherwise usually one per AgentRun |
-
-**Default:** If unsure, make each independent task/episode/sample its own AgentRun with a single Transcript.
-
-**Tree/branching data:** Ingest each branch as its own Transcript in its own AgentRun. Use metadata fields to identify how branches relate to each other (e.g., `parent_branch_id`, `branch_depth`, `root_task_id`).
-
-#### Data Pattern to Docent Mapping
-
-| Data Pattern | Collection | AgentRun | TranscriptGroup | Transcript |
-| :---- | :---- | :---- | :---- | :---- |
-| Simple evals | experiment | sample\_id, scores | — | messages |
-| Pass@k | experiment | task\_id, best\_score | attempt\_k | messages per attempt |
-| Tree/branching | experiment | one per branch, with metadata linking branches | — | messages for that branch |
-| Multi-agent | experiment | episode\_id, joint\_scores | — | one per agent |
-
-#### Field Mapping
-
-Map each source field to a Docent location:
-
-| Source Field | Target Location | Target Field | Notes |
-| :---- | :---- | :---- | :---- |
-| messages | Transcript.messages | — | Convert via parse\_chat\_message |
-| reward | AgentRun.metadata | scores.reward |  |
-| task\_id | AgentRun.metadata | task\_id |  |
-
-#### Document Omitted Data
-
-**CRITICAL:** If ANY data will not be ingested, document it clearly:
-
-| Field/File | Reason for Omission | Impact |
-| :---- | :---- | :---- |
-| `debug_logs/` | Contains only debug output, not agent transcripts | None |
-| `raw_api_responses` | Redundant with parsed messages | Low |
-
-**Never silently skip data.**
-
-#### Present Plan for Review
-
-Present the complete ingestion plan to the user and ask them to confirm all details:
-
-1. **Directory structure discovered** - what files/folders were found
-2. **Data type detected** - what format the data appears to be in
-3. **Proposed Docent hierarchy** - how data will be organized into collections, agent runs, transcript groups, and transcripts
-4. **Key field mappings** - which fields map to scores, metadata, messages, etc.
-5. **Omitted data** (if any) - what data will not be ingested and why
-6. **Collection name** - propose a name based on the data, ask user to confirm or provide a different name
-7. **Data context** - summarize your understanding of what this data represents (e.g., benchmark evaluation, agent task runs, multi-agent debate). Ask the user to confirm or clarify.
-8. **Analysis goals** - ask what kinds of analysis they want to do in Docent (e.g., compare two model checkpoints, find failure modes, understand a metric regression). This helps ensure the data is structured appropriately.
-
-Wait for the user to confirm all details before proceeding to Stage 3.
-
----
-
-## **Stage 3: Ingestion**
-
-### **Environment Setup**
-
-Activate virtual environment if present:
-
-```shell
-if [ -d "venv" ]; then
-    source venv/bin/activate
-elif [ -d ".venv" ]; then
-    source .venv/bin/activate
-fi
-```
-
-### **Handle Inspect AI Files**
-
-If Inspect `.eval` files were detected, use the built-in loader:
-
-```py
-from inspect_ai.log import read_eval_log
-from docent.loaders.load_inspect import load_inspect_log
-
-eval_log = read_eval_log("path/to/file.eval")
-agent_runs = load_inspect_log(eval_log)
-print(f"Loaded {len(agent_runs)} runs from Inspect log")
-```
-
-Skip to "Upload to Docent" below.
-
-### **Custom Data Loading**
-
-For non-Inspect data, build the ingestion script incrementally.
-
-**Important:** Always save ingestion scripts to the filesystem (e.g., `ingest.py` or `ingest_<collection_name>.py`) rather than running them inline. This aids in debugging, allows for iterative refinement, and provides a record of exactly how the data was ingested.
-
-**Error handling:** When running the ingestion script, if you encounter a failure that does not look easily recoverable (e.g., unexpected data format, authentication errors, API errors, or unclear error messages), stop and prompt the user for guidance rather than attempting repeated fixes. Describe the error clearly and ask how they would like to proceed.
-
-#### Load Data
-
-```py
-import os
-import json
-from pathlib import Path
-from docent import Docent
-from docent.data_models import AgentRun, Transcript, TranscriptGroup
-from docent.data_models.chat import parse_chat_message, ToolCall
-
-def load_data(path: str) -> list[dict]:
-    """Load data based on structure identified in Stage 2a."""
-    path = Path(path)
-    records = []
-    # Implementation based on detected template structure
-    return records
-
-raw_data = load_data(data_path)
-print(f"Loaded {len(raw_data)} records")
-```
-
-#### Conversion Function
-
-```py
-def convert_to_agent_run(record: dict) -> AgentRun:
-    """Convert a single record to AgentRun."""
-    raw_messages = record.get("messages") or record.get("traj") or []
-    messages = [parse_chat_message(m) for m in raw_messages]
-
-    # Handle tool calls if present
-    for i, msg in enumerate(raw_messages):
-        if msg.get("role") == "assistant" and msg.get("tool_calls"):
-            messages[i].tool_calls = [
-                ToolCall(
-                    id=tc.get("id", f"call_{i}"),
-                    function=tc.get("function", {}).get("name", tc.get("name", "")),
-                    arguments=tc.get("function", {}).get("arguments", tc.get("arguments", {})),
-                    type="function"
-                )
-                for tc in msg["tool_calls"]
-            ]
-
-    transcript = Transcript(
-        messages=messages,
-        metadata={...}  # transcript-level metadata from mapping
-    )
-
-    return AgentRun(
-        transcripts=[transcript],
-        metadata={
-            "scores": {...},  # from mapping
-            # other metadata from mapping
-        }
-    )
-```
-
-#### Validation Loop
-
-Test conversion on a sample before full ingestion:
-
-```py
-errors = []
-for i, record in enumerate(raw_data[:10]):
-    try:
-        agent_run = convert_to_agent_run(record)
-        print(f"✓ Record {i} converted successfully")
-    except Exception as e:
-        errors.append((i, str(e)))
-        print(f"✗ Record {i} failed: {e}")
-
-if errors:
-    print(f"\n{len(errors)} validation errors in first 10 records")
-```
-
-#### Full Conversion
-
-```py
-agent_runs = []
-conversion_errors = []
-
-for i, record in enumerate(raw_data):
-    try:
-        agent_runs.append(convert_to_agent_run(record))
-    except Exception as e:
-        conversion_errors.append({"index": i, "error": str(e)})
-
-print(f"Converted {len(agent_runs)}/{len(raw_data)} records")
-if conversion_errors:
-    print(f"Errors ({len(conversion_errors)}): {conversion_errors[:5]}...")
-```
-
-### **Upload to Docent**
-
-```py
-client = Docent(api_key=DOCENT_API_KEY)
-
-collection_id = client.create_collection(
-    name=collection_name,
-    description="",
-)
-print(f"Created collection: {collection_id}")
-
-client.add_agent_runs(collection_id, agent_runs)
-print(f"Uploaded {len(agent_runs)} runs")
-
-print(f"View at: https://docent.transluce.org/collection/{collection_id}")
-```
-
----
-
-## **Stage 4: Testing & Verification**
-
-Verify that the upload succeeded and counts match expectations.
-
-### **Count Verification**
-
-```py
-expected_runs = len(agent_runs)
-failed_conversions = len(conversion_errors)
-total_source_records = len(raw_data)
-
-print(f"\n{'='*50}")
-print("VERIFICATION REPORT")
-print(f"{'='*50}")
-print(f"Source records found:     {total_source_records}")
-print(f"Successfully converted:   {expected_runs}")
-print(f"Failed to convert:        {failed_conversions}")
-
-# Verify upload via Docent SDK
-try:
-    collection_info = client.get_collection(collection_id)
-    uploaded_count = collection_info.get("agent_run_count", "unknown")
-    print(f"Uploaded to Docent:       {uploaded_count}")
-
-    if uploaded_count != expected_runs:
-        print(f"⚠️  WARNING: Count mismatch! Expected {expected_runs}, got {uploaded_count}")
-    else:
-        print(f"✓ Counts match!")
-except Exception as e:
-    print(f"Could not verify upload count via API: {e}")
-    print(f"Please verify manually at: https://docent.transluce.org/collection/{collection_id}")
-```
-
-### **Log Verification Results**
-
-Update `ingestion-plan.md`:
-
-```
-## Verification
-
-### Counts
-- Source records: [total_source_records]
-- Converted successfully: [expected_runs]
-- Conversion failures: [failed_conversions]
-- Uploaded to Docent: [uploaded_count]
-- **Status:** [MATCH / MISMATCH]
-
-### Errors (if any)
-[List conversion errors with record index and error message]
-
-### Collection URL
-https://docent.transluce.org/collection/[collection_id]
-```
-
----
-
-## **Reference**
-
-See the data model guidance and examples in this file for Docent data model documentation.
-
-For additional guidance on Docent data models and API usage, consult the official documentation: [https://docs.transluce.org/llms.txt](https://docs.transluce.org/llms.txt)
-
-## **Common Patterns**
-
-### **Inspect AI Logs**
-
-When `.eval` files detected, use the built-in loader:
-
-```py
-from inspect_ai.log import read_eval_log
-from docent.loaders.load_inspect import load_inspect_log
-
-eval_log = read_eval_log("path/to/file.eval")
-agent_runs = load_inspect_log(eval_log)
-```
-
-### **Parsing Chat Messages**
-
-Use `parse_chat_message` to convert dictionaries to proper message objects:
-
-```py
-from docent.data_models.chat import parse_chat_message
-
-# From dict - automatically determines message type from "role"
-msg = parse_chat_message({
-    "role": "user",
-    "content": "What's 2+2?"
-})
-
-msg = parse_chat_message({
-    "role": "assistant",
-    "content": "The answer is 4."
-})
-
-msg = parse_chat_message({
-    "role": "system",
-    "content": "You are a helpful assistant."
-})
-
-# Direct construction is also available
-from docent.data_models.chat import UserMessage, AssistantMessage, SystemMessage
-msg = UserMessage(content="Hello")
-msg = AssistantMessage(content="Hi!", model="gpt-4")
-```
-
-### **Simple Dict to AgentRun**
-
-A common pattern for converting flat records:
-
-```py
-from docent.data_models import AgentRun, Transcript
-from docent.data_models.chat import parse_chat_message
-
-def convert_simple(record: dict) -> AgentRun:
-    messages = [parse_chat_message(m) for m in record["messages"]]
-    return AgentRun(
-        transcripts=[Transcript(messages=messages)],
-        metadata={
-            "scores": {"reward": record.get("reward", 0)},
-            **{k: v for k, v in record.items() if k != "messages"}
-        }
-    )
-```
-
-### **Tool Calls**
-
-Handle assistant messages with tool calls and their responses:
-
-```py
-from docent.data_models.chat import AssistantMessage, ToolMessage, ToolCall
-
-# Assistant making a tool call
-assistant_msg = AssistantMessage(
-    content="Let me search for that.",
-    tool_calls=[
-        ToolCall(
-            id="call_123",
-            function="web_search",
-            arguments={"query": "weather today"},
-            type="function"
-        )
-    ]
-)
-
-# Tool response
-tool_msg = ToolMessage(
-    content="Sunny, 72°F",
-    tool_call_id="call_123",
-    function="web_search"
-)
-
-# Helper to parse tool calls from raw data
-def parse_tool_calls(raw_calls: list) -> list[ToolCall]:
-    return [
-        ToolCall(
-            id=tc["id"],
-            function=tc["function"]["name"],
-            arguments=tc["function"].get("arguments", {}),
-            type="function"
-        )
-        for tc in raw_calls
-    ]
-```
-
-### **Pass@k Evaluation**
-
-Use `TranscriptGroup` for attempts:
-
-```py
-from uuid import uuid4
-from docent.data_models import AgentRun, Transcript, TranscriptGroup
-
-def convert_pass_at_k(task_data: dict) -> AgentRun:
-    agent_run_id = str(uuid4())
-    groups = []
-    transcripts = []
-
-    for k, attempt in enumerate(task_data["attempts"]):
-        group = TranscriptGroup(
-            name=f"Attempt {k+1}",
-            agent_run_id=agent_run_id,
-            metadata={"k": k}
-        )
-        groups.append(group)
-
-        transcript = Transcript(
-            messages=[parse_chat_message(m) for m in attempt["messages"]],
-            transcript_group_id=group.id,
-            metadata={"attempt": k}
-        )
-        transcripts.append(transcript)
-
-    return AgentRun(
-        id=agent_run_id,
-        transcripts=transcripts,
-        transcript_groups=groups,
-        metadata={"task_id": task_data["task_id"]}
-    )
-```
-
-### **Tree/Branching**
-
-Ingest each branch as its own `Transcript` in its own `AgentRun`. Use metadata to link branches:
-
-```py
-AgentRun(
-    transcripts=[transcript],
-    metadata={
-        "root_task_id": "task_123",
-        "branch_id": "branch_a_1",
-        "parent_branch_id": "branch_a",
-        "branch_depth": 2,
-    }
-)
-```
-
-### **Multi-Agent**
-
-One `Transcript` per agent in the same `AgentRun`:
-
-```py
-AgentRun(
-    transcripts=[
-        Transcript(messages=agent_1_messages, metadata={"agent_id": "agent_1"}),
-        Transcript(messages=agent_2_messages, metadata={"agent_id": "agent_2"}),
-    ],
-    metadata={
-        "episode_id": "episode_42",
-        "scores": {"joint_reward": 0.85}
-    }
-)
-```
-
-### **Validation**
-
-Always validate by rendering before upload:
-
-```py
-try:
-    _ = agent_run.text  # Triggers validation
-    print("Valid")
-except Exception as e:
-    print(f"Invalid: {e}")
-```
+If the SDK cannot verify the uploaded count, provide the collection URL and record that manual verification is needed.

@@ -8,7 +8,7 @@ alwaysApply: true
 
 **The goal of a Docent analysis is to give the user justifiable trust in the results.** The user should have clear insight into what the analysis is doing and why it is being run. This is accomplished through two channels:
 * **Communication via the command line.** Explain what you found, what you plan to do, and why — before writing code. Surface blockers and intermediate findings in plain language. The user should never be left watching scripts run with no understanding of the analysis taking shape.
-* **Readings in the Docent UI.** Readings make the analysis legible: the user can see every prompt sent to the LLM, every transcript analyzed, and every result returned — with citations back to the source material. Prefer readings over opaque DQL aggregations precisely because readings give the user a clear, inspectable visualization of the qualitative analysis performed. DQL summaries (counts, averages) are useful for orientation, but they are not self-explanatory the way a reading with cited evidence is.
+* **Analysis plans in the Docent UI.** Analysis plans make the analysis legible: the user can see every prompt sent to the LLM, every transcript analyzed, and every result returned — with citations back to the source material. (Note: you may see references to "reading plans", which is an outdated term for analysis plans. They're the same thing.)
 
 You can interact with Docent by writing Python scripts that use the Docent SDK, and by calling Docent MCP tools. If Docent MCP tools are not available, alert the user that the Docent MCP server is not installed correctly.
 
@@ -26,10 +26,8 @@ These apply throughout the entire analysis session:
 
   Good — explains the analytical choice so the user can redirect:
   > "Safety-monitoring is the broadest single safety indicator and it's scored for every run, so I'll use that as the primary ranking. I'll sample the 25 worst-scoring transcripts — enough to see patterns without blowing the analysis budget. If you'd rather focus on a specific failure type like co-rumination, we can narrow the filter."
-* **Minimize wasted user attention.** Every tool call the user has to approve is a cost — and the approval screen shows the full code block, which can fill the user's entire screen and destroy context. Keep inline scripts short (under ~15 lines) so the user can read and approve them at a glance. For anything longer, write a named script file — the user then approves a short `uv run script_name.py` command instead of scrolling through 60 lines of inline Python. Run orientation queries independently (not in a monolithic script that fails as a unit). Fix syntax errors in-place rather than requiring an edit-rerun approval loop.
-* **Speak in analysis terms, not platform terms.** The user is here to understand their data, not to learn Docent internals. Never use platform jargon in user-facing text. Translate to plain language:
-  - "reading" / "reading plan" → "analysis"
-  - "reading preset" → "saved analysis template" (or just omit — the user rarely needs to know)
+* **Minimize wasted user attention.** Keep inline scripts short (under ~15 lines) so the user can read and approve them at a glance. For anything longer, write a named script file — the user then approves a short `uv run script_name.py` command instead of scrolling through 60 lines of inline Python. Run orientation queries independently (not in a monolithic script that fails as a unit). Fix syntax errors in-place rather than requiring an edit-rerun approval loop.
+* **Avoid unnecessary docent-internal jargon.** The user is here to understand their data, not to learn Docent internals.
   - "flush" → never mention to the user
   - "DQL" / "DQL query" → "query," or just describe what you're checking
   - "template reading" / "scripted reading" → never mention; these are implementation details
@@ -44,8 +42,6 @@ These apply throughout the entire analysis session:
 
   Good — narrates the investigation:
   > "Let me check how the models compare on safety scores — I'll look at the averages and the distribution of failures."
-
-  Platform terminology belongs in code and code comments, not in conversation with the user. When in doubt, ask: would an analyst unfamiliar with Docent understand this sentence?
 * **Surface blocking errors to the user immediately.** If a script fails on permissions, unexpected data, or a problem you can't fix in one retry, tell the user what happened and why before attempting a fix. Don't silently retry multiple times — the user loses trust when they can't see what's going on.
 * **Don't raise concerns and then drop them.** If you notice a potential data integrity issue (e.g., "these score columns might be keyed by judge model, not subject model"), resolve it before proceeding — run a quick verification query, check the metadata, or ask the user. Raising a concern, saying "let me verify," and then continuing without verifying is worse than not noticing: the user now has false confidence that the issue was checked.
 
@@ -68,11 +64,11 @@ client = Docent.from_url("https://docent.transluce.org/dashboard/668354d8-...")
 ```
 This parses the domain and collection ID from the URL automatically.
 
-The Docent SDK can be configured by a docent.env file in the working directory. The SDK will automatically discover and load a docent.env file if it exists. You do not need to explicitly source docent.env. Config files may use INI-style `[section]` headers for multi-profile support; select a profile with `Docent(profile="my-profile")` or the `DOCENT_PROFILE` environment variable.
+The Docent SDK can be configured by a `docent.env` file. The SDK searches from the current working directory upward through parent directories, then falls back to `~/.docent/docent.env` if no local file exists. You do not need to explicitly source `docent.env`. Config files may use INI-style `[section]` headers for multi-profile support; select a profile with `Docent(profile="my-profile")` or the `DOCENT_PROFILE` environment variable.
 
 If you're not sure what collection the user is talking about:
 * If the user provides a Docent dashboard URL (e.g., `https://docent.transluce.org/dashboard/668354d8-...`), use `Docent.from_url()` or extract the collection ID from the last path segment (the UUID).
-* Otherwise, check the `docent.env` file in the working directory for `DOCENT_COLLECTION_ID`.
+* Otherwise, check the SDK-discovered `docent.env` file for `DOCENT_COLLECTION_ID`.
 * If neither is available, ask the user to paste the collection UUID.
 
 The main Docent deployment lives at https://docent.transluce.org but the user may connect a different deployment by overriding DOCENT_FRONTEND_URL in docent.env. The Docent SDK will print out the frontend URL when it is initialized, e.g. `Authenticating Docent client with frontend_url='https://docent.transluce.org'`. If you see a different frontend URL, use that URL in place of `https://docent.transluce.org` for any links.
@@ -84,9 +80,10 @@ If you run into any issues or unexpected behavior with the Docent platform, paus
 * If authentication fails (HTTP 401) or no API key is configured, walk the user through setup:
   1. Open the API keys page for them: `open https://docent.transluce.org/settings/api-keys` (macOS) or `xdg-open https://docent.transluce.org/settings/api-keys` (Linux).
   2. Ask them to create a new API key (it will start with `dk_`).
-  3. Write the key to a `docent.env` file in the working directory: `DOCENT_API_KEY=dk_...` (plus `DOCENT_API_URL` and `DOCENT_FRONTEND_URL` if not using the default instance).
+  3. Write the key to a local `docent.env` file or `~/.docent/docent.env`: `DOCENT_API_KEY=dk_...` (plus `DOCENT_API_URL` and `DOCENT_FRONTEND_URL` if not using the default instance).
   4. Verify connectivity by constructing a `Docent()` client — the constructor validates the API key automatically.
-* If the SDK does not match what's documented in this SKILL.md, check whether the SDK is up to date.
+* If the SDK does not match what's documented here, check whether the SDK is up to date.
+* If the Docent MCP server is available but doesn't match the tools documented here, check whether the MCP server needs an upgrade (`uv tool upgrade docent`). If an upgrade was needed, ask the user to restart the session or MCP server.
 * Use the `get_reading_plan_results` MCP tool to inspect the results of an analysis. Call it with just `collection_id` and `plan_name` to see an overview of all steps and their statuses. Call it with an additional `step_name` to see the actual results for a specific step.
 * **When debugging, try first, ask second.** If the user asks you to debug a failed analysis and gives you a plan name, collection ID, or other identifying info, attempt the lookup immediately with whatever you have. A failed tool call is instant, informative, and free — it tells you exactly what went wrong. Asking the user to confirm inputs before trying adds a round-trip that produces nothing the tool call wouldn't have revealed faster. If the lookup fails, *then* ask for corrections with the error context in hand.
 
@@ -99,26 +96,32 @@ When the user asks to see something in the Docent UI, or when you want to point 
 | Collection dashboard | `https://docent.transluce.org/dashboard/{collection_id}` |
 | Agent run | `https://docent.transluce.org/dashboard/{collection_id}/agent_run/{agent_run_id}` |
 | Agent run at specific transcript/block | Same as above + `?transcript_idx={N}&block_idx={M}` |
-| Reading plan | `https://docent.transluce.org/dashboard/{collection_id}/reading-plan/{reading_plan_id}` |
+| Analysis plan | `https://docent.transluce.org/dashboard/{collection_id}/analysis-plan/{reading_plan_id}` |
 
 **When to use UI links instead of scripts:**
 * The user asks to "see" or "browse" something (e.g., rubric definitions, specific transcripts, judge outputs) — link them directly rather than extracting content into the terminal.
 * You want the user to inspect specific evidence — provide the URL so they can drill in.
-* You're presenting analysis findings — include the reading plan URL so the user can verify claims.
+* You're presenting analysis findings — include the analysis plan URL so the user can verify claims.
 
 **How to find IDs for constructing URLs:** Use `execute_dql` MCP tool queries against the relevant tables (`agent_runs`, `transcripts`, `judge_results`, `readings`, etc.) to look up IDs, then construct the URL.
 
-## Reading transcripts (optional)
+## Overview of analysis tools and terminology
 
-You can use the get_agent_run_messages MCP tool to read the content of an individual agent run or transcript as needed. Use this sparingly; prefer readings for systematic analysis of agent behavior. However, you may decide to use get_agent_run_messages:
-* To understand what a collection contains, if metadata doesn't make it clear
-* To understand what a behavior of interest might concretely look like, when crafting a reading prompt to detect the behavior
+DQL is a read-only subset of DQL that you can use to query agent runs in the docent database. DQL is useful for quantitative analysis of agent run metadata (e.g. which model gets the highest average score). DQL should never be used to inspect transcript content. Read ./dql-reference.md before using DQL.
 
----
+A reading is a structured batch of LLM calls. Readings are useful for qualitative analysis of agent run content (e.g. what mistakes is the agent making, how is it interacting with the user). Use readings instead of inspecting transcript content directly. See details in ./readings-reference.md.
 
-# Workflow
+An analysis script is a Python script you write using the Docent SDK. An analysis script can perform DQL queries (client.query) and readings (client.read).
 
-This section describes the end-to-end process for a Docent analysis session. Follow it in order.
+When you run an analysis script, an analysis plan is displayed in the Docent UI. Each query and reading in the script is displayed as a separate card in the analysis plan. Readings require approval from the user before they are run. Results for both step types (DQL and reading) are displayed in interactive tables.
+
+Once you have a question where qualitative analysis is clearly required, you can go ahead and create + run an analysis script with readings. If you need the user to clarify or refine the question, do that before writing the script.
+
+Note: the Docent UI is the primary place to view reading results. You do not need to fetch them, read them, and restate them to the user. If a summary or synthesis would be helpful, perform that as another reading in the same analysis script so it will show up in the UI. If a structured aggregation of reading results would be helpful, perform that as another DQL query in the same analysis script.
+
+# Example workflow
+
+This section describes the end-to-end process for a Docent analysis session.
 
 ## Step 1: Orient and brief the user
 
@@ -130,11 +133,13 @@ If the user provided a dashboard URL, use `Docent.from_url()` in all scripts thr
 
 Use the `get_metadata_fields` MCP tool to understand the structure of agent run metadata for the current collection. Agent runs contain metadata that varies by collection — do not make assumptions about its structure.
 
-Also call `list_reading_presets` to check if the collection has any saved analysis templates. These can be reused and are worth knowing about before proposing analysis directions. Do not mention "reading presets" to the user; if relevant presets exist, describe them by what they analyze (e.g., "there's a saved analysis for failure classification that we can reuse").
+Also call `list_reading_presets` to check if the collection has any saved reading presets. These can be reused and are worth knowing about before proposing analysis directions.
 
 **Immediately after these calls return, tell the user what you see** in 2-3 sentences: what kind of data is in this collection, what the key dimensions are (e.g., models, tasks, environments), and what scores or metrics are available. This is the user's first orientation to the dataset — don't skip it, and don't jump straight into writing queries.
 
 ### 1b. Run orientation queries, reporting as you go
+
+Read `./dql-reference.md` for detailed information on how to write DQL queries.
 
 Explore the data with a small number of targeted queries — 2-3 is usually enough; don't write 5+ "just in case." **Always use the `execute_dql` MCP tool, never a Python script or local aggregation.** It runs read-only DQL directly without an approval round-trip. If you have a genuine reason to use Python here (e.g., chaining a couple of queries), the aggregations themselves must still go through `client.execute_dql` using `uv run python3 -c "..."`.
 
@@ -144,7 +149,8 @@ Report each finding as you get it — one sentence per query is enough. If a que
 
 **When presenting numbers, always explain the scale.** Don't show a table of values without telling the user what they mean. Are these averages of binary 0/10 scores (i.e., pass rates)? Continuous scores on a 0-10 scale? Higher-is-better or higher-is-worse? If the metric names are opaque (e.g., "poetic escalation," "beneficent goal-directed tenacity"), give the user a one-line plain-language description of what each one measures. If you don't know exactly how a metric is defined, say so rather than letting the user assume your labels are precise.
 
-**When formatting tables:**
+**Formatting ASCII tables:**
+You may format findings as ASCII tables where appropriate. Only use ASCII tables for quick, informal updates. For presenting aggregations or slices of final results, use client.query in your analysis script. For any table of individual agent runs or transcripts, use client.query. (The Docent UI makes it convenient to inspect individual transcripts, unlike an ASCII table.)
 * Use plain-language column headers, not internal field names (e.g., "Co-rumination" not "avg_co_rum")
 * Label the scale once (e.g., "All scores 0-10, higher = safer" or "Pass rate out of 252 runs")
 * Don't bold arbitrary values without explaining the logic — if you bold the worst values, say "worst in bold"
@@ -207,7 +213,7 @@ ORDER BY run_count DESC
 
 If the user has not precisely stated what analysis they want you to run, now is a good time to check in. Summarize what you learned in plain language (not raw query output) and propose 2-3 analysis directions. Let the user choose which question they want to focus on. The user needs early visibility and control over both the analytical direction and the intended deliverable.
 
-**Stop and wait for the user to respond.** Do not propose directions and then immediately commit to one. This is the most common violation of this step:
+**Stop and wait for the user to respond.** Do not propose directions and then immediately commit to one.
 
 Bad — proposes then bulldozes:
 > "Here are three directions we could take: (1) safety failures, (2) hardest scenarios, (3) empathy vs. safety tradeoff. Assuming you'd pick option 1, let me go ahead and write the analysis..."
@@ -288,25 +294,15 @@ Before running your first analysis script against a collection:
 
 ### Build incrementally
 
-**Build incrementally, not monolithically.** A phase is one analytical step: summarize, cluster, classify, compare. Each phase becomes a separate run-and-review cycle. Write the first phase of your script (e.g., summarize transcripts + propose clusters), run it, confirm it works and report the intermediate results to the user. Then extend the script with the next phase and run again — earlier steps are cached and won't re-run. See the phased clustering example in `./readings-reference.md` for this pattern.
+A phase is one analytical step: summarize, cluster, classify, compare. Each phase becomes a separate run-and-review cycle. Write the first phase of your script (e.g., summarize transcripts + propose clusters), run it, confirm it works and report the intermediate results to the user. Then extend the script with the next phase and run again — earlier steps are cached and won't re-run. See the phased clustering example in `./readings-reference.md` for this pattern.
 
 Do not write a script covering all phases at once. A monolithic script that fails on line 50 wastes all the work after it and forces a full debug-edit-rerun cycle. Worse, you spend your entire turn budget debugging DQL syntax instead of delivering results. The phased approach means each run is short, each failure is isolated, and the user sees intermediate progress.
 
 ### Running and communicating
 
-Analyses appear in a web UI for the user to approve — this is a key control affordance. You are responsible for running analysis scripts when appropriate; the user should not have to do so manually.
+Analysis plans appear in a web UI for the user to approve — this is a key control affordance. You are responsible for running analysis scripts when appropriate; the user should not have to do so manually. Prefer to run analysis scripts in the background, so that you can still communicate with the user if the script pauses to wait for approval.
 
 **Surface the Docent UI link as soon as the analysis is submitted** — don't wait until results come back. The SDK's `flush()` opens a browser tab, but the user may not notice or may lose it among other tabs. Always tell the user explicitly: "The analysis is running — you can follow along and approve it here: [link]." This is especially important because the link is how the user inspects the evidence behind every finding.
-
-### Hierarchical synthesis for large result sets
-
-When synthesizing more than ~30 reading results into a single analysis, do NOT put all results into one prompt. Instead:
-
-1. **Batch**: Split results into groups of 15-20 using DQL (e.g., `LIMIT 20 OFFSET 0`, `LIMIT 20 OFFSET 20`, etc.)
-2. **Summarize each batch**: Run a synthesis reading per batch that produces a structured intermediate summary
-3. **Final synthesis**: Aggregate the batch summaries (which are now ~5-10 items) into a single final reading
-
-Alternatively, if the per-item readings produce structured output (e.g., categories/enums), use DQL aggregation over `reading_results.output` to produce counts and distributions — this avoids context limits entirely and gives exact numbers.
 
 **Be explicit about partial data.** When `get_reading_plan_results` returns truncated output (e.g., 50 of 132 results visible), state the exact fraction you saw and caveat derived numbers. Prefer using query aggregation over `reading_results.output` to get complete counts rather than parsing truncated tool output. For example, to get the full distribution of a structured output field across all results, query `reading_results` directly:
 
@@ -322,22 +318,13 @@ GROUP BY category
 ORDER BY cnt DESC
 ```
 
-### Multi-phase analyses and approval round-trips
-
-Some analyses require mid-script blocking (e.g., the clustering pattern accesses step 2 results to derive enum values for step 3). Be aware that:
-
-* The script will submit steps 1-2 for approval, then **block** waiting for results. If the user hasn't approved yet, the script may time out or fail.
-* The user will need to approve **twice**: once for the initial analysis steps, and again after the script resumes and submits the next phase.
-* **Warn the user upfront** about multi-approval flows, but in plain terms: "This analysis has two phases — first I'll summarize each transcript, then once we see the patterns, I'll classify them into categories. You'll need to approve each phase in the Docent UI."
-
 ## Critical workflow rules
 
 These are specific rules that follow from the principles above. They apply throughout the analysis:
 
-* **Never present opaque Python computation as analysis results.** Orientation queries (Step 1) are for *your* understanding and can use `execute_dql()` and local Python. But once you move past orientation into actual analysis (Step 3), findings must go through Docent's inspectable pipeline — DQL query steps visible in the UI and LLM analyses with citable evidence. If the user's question requires categorization, comparison, or synthesis, use Docent analyses, not a Python script that outputs a table. The user has no way to verify, inspect, or drill into results that come from opaque code. Metadata aggregations via DQL are acceptable as supporting context (e.g., counts, averages), but the analytical conclusions should come from inspectable analyses the user can review in the Docent UI.
-* **Recognize when you're about to violate the rule above.** The most common trigger is a user question that *feels* computational — grouping, ranking, statistical comparison, interaction effects. Your instinct will be to write Python that solves the problem directly (clustering algorithms, composite scores, significance tests). When you notice this instinct, go back to the Step 2b translation table and express the work as LLM analyses and DQL aggregations instead.
-* **Never fall back to manual synthesis when an analysis step fails.** If a synthesis step fails (e.g., context overflow), fix the analysis design (batch it, sample it, use structured aggregation) and re-submit. Do not absorb the synthesis work into opaque Python scripts or agent-side summarization — this defeats the core value of Docent's inspectable, citable analysis. If you must do agent-side aggregation as a stopgap (e.g., counting structured output fields via a query), explicitly flag to the user that this step is not inspectable in the Docent UI and offer to re-run it properly.
-* **If the user asks you to "summarize the agent runs", "classify the results", or similar**, they do not necessarily mean that you (the coding agent) should do so directly. In most cases, it is better to use Docent's LLM analysis (readings) for this.
+* **Never present opaque Python computation as analysis results.** Orientation queries (Step 1) are for *your* understanding and can use `execute_dql()` and local Python. But once you move past orientation into actual analysis (Step 3), findings must go through Docent's inspectable pipeline — DQL query steps visible in the UI and analysis-plan readings with citable evidence. If the user's question requires categorization, comparison, or synthesis, use Docent analyses, not a Python script that outputs a table. The user has no way to verify, inspect, or drill into results that come from opaque code. Metadata aggregations via DQL are acceptable as supporting context (e.g., counts, averages), but the analytical conclusions should come from inspectable analyses the user can review in the Docent UI.
+* **Don't fall back to manual synthesis when an analysis step fails.** If a synthesis step fails (e.g., context overflow), fix the analysis design (batch it, sample it, use structured aggregation) and re-submit. Do not absorb the synthesis work into opaque Python scripts or agent-side summarization — this defeats the core value of Docent's inspectable, citable analysis. If you must do agent-side aggregation as a stopgap (e.g., counting structured output fields via a query), explicitly flag to the user that this step is not inspectable in the Docent UI and offer to re-run it properly.
+* If the user asks you to "read the agent runs", "summarize 10 transcripts", "classify the results", or similar, that not mean that you (the coding agent) should do so directly. Prefer to do this in an analysis plan using readings.
 * **Be transparent about reused work.** This has two parts:
   - **Existing scripts:** If you find an analysis script already on disk from a prior session, don't silently reuse or overwrite it. Tell the user what it does, what analytical choices are embedded in it (thresholds, sample sizes, which dimensions), and ask whether to reuse it or write a fresh one.
   - **Cached results:** After `flush()` returns, check the output for cache indicators (e.g., "cached (5 results)" in step status). If results came back cached, tell the user immediately: "These results are from a prior session — I'm pulling existing results rather than re-running. Want me to force a fresh analysis?" Do not narrate cached results as if you just computed them. The user needs to know whether they're looking at fresh work or replayed results.

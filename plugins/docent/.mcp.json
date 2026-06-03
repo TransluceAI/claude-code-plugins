@@ -3,7 +3,7 @@
     "docent": {
       "type": "stdio",
       "command": "uv",
-      "args": ["tool", "run", "--from", "docent-python", "docent-mcp"]
+      "args": ["tool", "run", "--from", "docent-python>=0.1.73", "docent-mcp"]
     }
   }
 }

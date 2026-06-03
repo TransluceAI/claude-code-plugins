@@ -1,0 +1,100 @@
+name: Plugin sanity
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sanity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate Claude Code plugin package
+        run: |
+          python - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          root = Path.cwd()
+
+          def fail(message: str) -> None:
+              raise SystemExit(message)
+
+          def load_json(path: Path) -> dict:
+              try:
+                  return json.loads(path.read_text(encoding="utf-8"))
+              except Exception as exc:
+                  fail(f"{path} is not valid JSON: {exc}")
+
+          marketplace = load_json(root / ".claude-plugin" / "marketplace.json")
+          entries = marketplace.get("plugins")
+          if not isinstance(entries, list):
+              fail("marketplace plugins must be a list")
+
+          docent_entries = [entry for entry in entries if entry.get("name") == "docent"]
+          if len(docent_entries) != 1:
+              fail("marketplace must contain exactly one docent plugin entry")
+
+          entry = docent_entries[0]
+          plugin_dir = root / entry.get("source", "")
+          if not plugin_dir.is_dir():
+              fail(f"marketplace source does not exist: {plugin_dir}")
+
+          manifest = load_json(plugin_dir / ".claude-plugin" / "plugin.json")
+          if manifest.get("name") != "docent":
+              fail("plugin manifest name must be docent")
+
+          version = manifest.get("version")
+          if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", version):
+              fail("plugin manifest version must be plain major.minor.patch")
+          if entry.get("version") != version:
+              fail("marketplace docent version must match plugin manifest version")
+
+          required_files = [
+              ".claude-plugin/plugin.json",
+              ".mcp.json",
+              "skills/docent/SKILL.md",
+              "skills/docent/analysis.md",
+              "skills/docent/dql-reference.md",
+              "skills/docent/ingestion-reference.md",
+              "skills/docent/ingestion.md",
+              "skills/docent/readings-reference.md",
+              "skills/docent/report.md",
+          ]
+          for rel_path in required_files:
+              path = plugin_dir / rel_path
+              if not path.is_file():
+                  fail(f"required plugin file is missing: {rel_path}")
+              if path.suffix == ".md" and not path.read_text(encoding="utf-8").strip():
+                  fail(f"markdown file is empty: {rel_path}")
+
+          mcp = load_json(plugin_dir / ".mcp.json")
+          server = mcp.get("mcpServers", {}).get("docent")
+          if not isinstance(server, dict):
+              fail(".mcp.json must define mcpServers.docent")
+          if server.get("type") != "stdio" or server.get("command") != "uv":
+              fail("docent MCP server must run as uv stdio")
+          args = server.get("args")
+          if not isinstance(args, list) or "--from" not in args:
+              fail("docent MCP server args must include --from")
+          package = args[args.index("--from") + 1]
+          if package != "docent-python>=0.1.73":
+              fail("docent MCP server must require docent-python>=0.1.73")
+
+          forbidden_names = {".mcp.local.json", "docent.env"}
+          for path in plugin_dir.rglob("*"):
+              if path.name in forbidden_names or path.name.startswith("docent.env."):
+                  fail(f"local credential/config file must not be published: {path}")
+
+          print("Claude Code plugin sanity checks passed")
+          PY
