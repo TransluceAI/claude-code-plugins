@@ -69,8 +69,8 @@ raw_rows = client.dql_result_to_dicts(result)
 | `name` | Optional transcript title. |
 | `description` | Optional description. |
 | `transcript_group_id` | Optional grouping identifier. |
-| `messages` | Binary-encoded JSON payload of message turns. |
-| `metadata_json` | Binary-encoded metadata describing the transcript. |
+| `messages` | UTF-8 bytes of a JSON array of message turns (Postgres `bytea`, not `jsonb`). Use `convert_from` before JSON operators or `jsonb_array_length` (see [Counting transcript messages](#counting-transcript-messages)). |
+| `metadata_json` | UTF-8 bytes of JSON metadata (`bytea`). Same `convert_from` pattern as `messages` when using JSON operators. |
 | `created_at` | Timestamp recorded during ingest. |
 
 ### `transcript_groups`
@@ -112,6 +112,8 @@ raw_rows = client.dql_result_to_dicts(result)
 | `dql_query` | DQL query (template readings only). |
 | `model_json` | Model configuration. |
 | `output_schema` | JSON schema for output validation. |
+| `max_new_tokens` | Maximum number of new tokens generated per LLM call. |
+| `num_rollouts` | Number of independent LLM samples generated per input row (>= 1). |
 | `source_reading_preset_id` | Optional associated preset. |
 | `created_at` | When the reading was created. |
 
@@ -151,6 +153,7 @@ For scripted readings, `arguments_dict` holds arbitrary user-supplied metadata p
 | --- | --- |
 | `reading_id` | FK to readings.id. |
 | `result_id` | FK to reading_results.id. |
+| `rollout_index` | 0-based position of this rollout within the reading's group for the same input row. Range `[0, readings.num_rollouts)`. |
 
 ## JSON Metadata Access Patterns
 
@@ -165,14 +168,20 @@ WHERE metadata_json->>'environment' = 'staging';
 
 ```sql
 -- Retrieve nested transcript metadata
+-- `transcripts.metadata_json` is bytea (UTF-8 JSON), not jsonb — decode before JSON operators.
 -- Dots in `get_metadata_fields` output (e.g. `metadata.conversation.speaker`) indicate nested JSON objects;
 -- traverse with -> for intermediate keys and ->> for the final key.
 SELECT
   id,
-  metadata_json->'conversation'->>'speaker' AS speaker,
-  metadata_json->'conversation'->>'topic' AS topic
-FROM transcripts
-WHERE metadata_json->>'status' = 'flagged';
+  meta->'conversation'->>'speaker' AS speaker,
+  meta->'conversation'->>'topic' AS topic
+FROM (
+  SELECT
+    id,
+    convert_from(metadata_json, 'UTF8')::jsonb AS meta
+  FROM transcripts
+) AS t
+WHERE meta->>'status' = 'flagged';
 ```
 
 ```sql
@@ -185,6 +194,47 @@ WHERE metadata_json ? 'latency_ms';
 
 When querying JSON fields, comparisons default to string semantics. Cast values when you need numeric ordering or aggregation.
 
+## Counting transcript messages
+
+`transcripts.messages` is stored as `bytea` (UTF-8 JSON), not `jsonb`. You cannot use `messages -> 0` or `jsonb_array_length(messages)` directly — Postgres reports `operator does not exist: bytea -> integer`.
+
+Decode to `jsonb`, then count array elements:
+
+```sql
+jsonb_array_length(convert_from(messages, 'UTF8')::jsonb)
+```
+
+Allowed helpers: `convert_from`, `convert_to`, `jsonb_array_length`.
+
+### Agent runs with at least N messages (any transcript)
+
+```sql
+SELECT DISTINCT ar.id AS agent_run_id
+FROM agent_runs ar
+JOIN transcripts t ON t.agent_run_id = ar.id
+WHERE jsonb_array_length(convert_from(t.messages, 'UTF8')::jsonb) >= 10;
+```
+
+### Per-transcript message counts
+
+```sql
+SELECT
+  transcript_id,
+  agent_run_id,
+  message_count
+FROM (
+  SELECT
+    t.id AS transcript_id,
+    t.agent_run_id,
+    jsonb_array_length(convert_from(t.messages, 'UTF8')::jsonb) AS message_count
+  FROM transcripts t
+) AS counted
+WHERE message_count >= 10
+ORDER BY message_count DESC;
+```
+
+Express filters like “≥10 messages” in DQL with the pattern above. Do not materialize matching run IDs elsewhere and paste them into a huge `WHERE id IN (...)` clause.
+
 ## Allowed Syntax
 
 | Feature |
@@ -194,7 +244,7 @@ When querying JSON fields, comparisons default to string semantics. Cast values 
 | `WITH` (CTEs) |
 | `UNION [ALL]`, `INTERSECT`, `EXCEPT` |
 | `GROUP BY`, `HAVING` |
-| Aggregations (`COUNT`, `AVG`, `MIN`, `MAX`, `SUM`, `STDDEV_POP`, `STDDEV_SAMP`, `VAR_POP`, `VAR_SAMP`, `ARRAY_AGG`, `STRING_AGG`, `JSON_AGG`, `JSONB_AGG`, `JSON_OBJECT_AGG`, `PERCENTILE_CONT`, `PERCENTILE_DISC` with `WITHIN GROUP`) |
+| Aggregations (`COUNT`, `AVG`, `MIN`, `MAX`, `SUM`, `STDDEV_POP`, `STDDEV_SAMP`, `VAR_POP`, `VAR_SAMP`, `ARRAY_AGG`, `STRING_AGG`, `JSON_AGG`, `JSONB_AGG`, `JSON_OBJECT_AGG`, `MODE`, `PERCENTILE_CONT`, `PERCENTILE_DISC` with `WITHIN GROUP`) |
 | Window functions (`ROW_NUMBER`, `RANK`, `DENSE_RANK`, `NTILE`, `LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE`, `NTH_VALUE`, `PERCENT_RANK`, `CUME_DIST`) |
 | `ORDER BY`, `LIMIT`, `OFFSET` |
 | Conditional & null helpers (`CASE`, `COALESCE`, `NULLIF`) |
@@ -202,7 +252,7 @@ When querying JSON fields, comparisons default to string semantics. Cast values 
 | Comparison operators (`=`, `!=`, `<`, `<=`, `>`, `>=`, `IS`, `IS NOT`, `IS DISTINCT FROM`, `IN`, `BETWEEN`, `LIKE`, `ILIKE`, `EXISTS`, `SIMILAR TO`, `~`, `~*`, `!~`, `!~*`) |
 | Arithmetic & math (`+`, `-`, `*`, `/`, `%`, `POWER`, `ABS`, `SIGN`, `SQRT`, `LN`, `LOG`, `EXP`, `GREATEST`, `LEAST`, `FLOOR`, `CEIL`, `ROUND`, `RANDOM`) |
 | String helpers (`SUBSTRING`, `LEFT`, `RIGHT`, `LENGTH`, `UPPER`, `LOWER`, `INITCAP`, `TRIM`, `REPLACE`, `SPLIT_PART`, `POSITION`, `CONCAT`, `CONCAT_WS`, `STRING_AGG`) |
-| JSON operators & functions (`->`, `->>`, `#>`, `#>>`, `@>`, `?`, `?|`, `?&`, `jsonb_build_object`, `jsonb_build_array`, `json_agg`, `jsonb_agg`, `json_object_agg`, `jsonb_set`, `jsonb_path_query`, `jsonb_path_exists`) |
+| JSON operators & functions (`->`, `->>`, `#>`, `#>>`, `@>`, `?`, `?|`, `?&`, `jsonb_build_object`, `jsonb_build_array`, `jsonb_array_length`, `json_agg`, `jsonb_agg`, `json_object_agg`, `jsonb_set`, `jsonb_path_query`, `jsonb_path_exists`, `convert_from`, `convert_to`) |
 | Date/time basics (`CURRENT_DATE`, `CURRENT_TIME`, `CURRENT_TIMESTAMP`, `NOW()`, `EXTRACT`, `DATE_TRUNC`, `AGE`, `AT TIME ZONE`, `timezone()`) |
 | Interval arithmetic (`timestamp +/- INTERVAL`, `INTERVAL` literals, `MAKE_INTERVAL`, `JUSTIFY_DAYS`, `JUSTIFY_HOURS`, `JUSTIFY_INTERVAL`) |
 | Construction & conversion (`MAKE_DATE`, `MAKE_TIME`, `MAKE_TIMESTAMP`, `MAKE_TIMESTAMPTZ`, `TO_CHAR`, `TO_DATE`, `TO_TIMESTAMP`, `DATE_PART`) |
@@ -281,6 +331,92 @@ ORDER BY rr.id DESC
 LIMIT 50;
 ```
 
+### Rollouts and Self-Consistency
+
+When a reading is configured with `num_rollouts > 1`, each input row produces multiple
+independent LLM samples. Rollouts are stored as separate `reading_results` rows joined
+to the reading via `reading_result_links`, with `reading_result_links.rollout_index`
+recording the 0-based position within the reading. Samples are fungible: a single
+result row may be linked by multiple readings (at potentially different rollout
+positions) when a cached sample is reused.
+
+**Always filter out pending and failed rollouts before aggregating outputs.** The
+canonical predicate is:
+
+```sql
+rr.output IS NOT NULL AND (rr.error IS NULL OR rr.error::text = 'null')
+```
+
+`error` is JSONB, so SQL `NULL` and JSON `null` are both possible.
+
+#### Per-row rollouts side by side
+
+```sql
+SELECT
+  rr.arguments_dict->'agent_run'->>'id' AS agent_run_id,
+  rrl.rollout_index,
+  rr.output->>'answer' AS answer
+FROM reading_results rr
+JOIN reading_result_links rrl ON rrl.result_id = rr.id
+WHERE rrl.reading_id = '<reading-uuid>'
+  AND rr.output IS NOT NULL
+ORDER BY agent_run_id, rrl.rollout_index;
+```
+
+#### Per-row self-consistency and modal vote
+
+`COUNT(DISTINCT ...)` measures spread; `MODE() WITHIN GROUP` picks the majority answer.
+
+```sql
+SELECT
+  rr.arguments_dict->'agent_run'->>'id' AS agent_run_id,
+  COUNT(rr.id) AS n_completed,
+  COUNT(DISTINCT rr.output->>'answer') AS n_distinct_answers,
+  MODE() WITHIN GROUP (ORDER BY rr.output->>'answer') AS modal_answer
+FROM reading_results rr
+JOIN reading_result_links rrl ON rrl.result_id = rr.id
+WHERE rrl.reading_id = '<reading-uuid>'
+  AND rr.output IS NOT NULL
+GROUP BY agent_run_id;
+```
+
+To compare two readings, wrap this query (selecting `agent_run_id, modal_answer`) as a
+subquery per reading and join the two on `agent_run_id`.
+
+#### Reading-level self-consistency rate
+
+```sql
+SELECT
+  reading_id,
+  ROUND(CAST(AVG(CASE WHEN n_distinct = 1 THEN 1.0 ELSE 0.0 END) AS NUMERIC), 3)
+    AS unanimous_row_fraction,
+  ROUND(CAST(AVG(n_distinct) AS NUMERIC), 3) AS avg_distinct_per_row
+FROM (
+  SELECT
+    rrl.reading_id AS reading_id,
+    rr.cache_key_hash AS row_key,
+    COUNT(DISTINCT rr.output->>'answer') AS n_distinct
+  FROM reading_results rr
+  JOIN reading_result_links rrl ON rrl.result_id = rr.id
+  WHERE rrl.reading_id IN ('<reading-A>', '<reading-B>')
+    AND rr.output IS NOT NULL
+  GROUP BY rrl.reading_id, rr.cache_key_hash
+) AS row_stats
+GROUP BY reading_id;
+```
+
+**Counting semantics.** Because cached samples are pooled across readings, a single
+`reading_results` row may appear in multiple readings via different links. Choose:
+
+- `COUNT(rr.id)` or `COUNT(rrl.result_id)` — counts links (i.e. rollouts as seen by
+  this reading set). What you usually want.
+- `COUNT(DISTINCT rr.id)` — counts unique LLM calls (i.e. the underlying sample pool).
+
+**Rollout pairing caveat.** `rollout_index` is per-link, not per-result: rollout #2 of
+reading A and rollout #2 of reading B are not paired draws. Avoid joining across
+readings on `(input, rollout_index)` for paired tests — fungible samples have no
+positional identity across readings.
+
 ## Restrictions and Best Practices
 
 - **Read-only**: Only `SELECT`-style queries are permitted.
@@ -290,6 +426,7 @@ LIMIT 50;
 - **Limit enforcement**: Every query is capped at 10,000 rows. Use pagination (`OFFSET`/`LIMIT`) for larger row collections.
 - **JSON performance**: Heavy JSON traversal across large collections can be slow. Prefer top-level fields when available.
 - **Type awareness**: Cast values explicitly when precision matters.
+- **Reading results: filter by completion.** Querying `reading_results` will include pending and failed rollouts by default. Add `WHERE rr.output IS NOT NULL AND (rr.error IS NULL OR rr.error::text = 'null')` to any aggregation that should ignore them.
 
 ## DQL quirks
 
@@ -338,6 +475,9 @@ SELECT task, COUNT(task) AS run_count, ROUND(CAST(AVG(score) AS NUMERIC), 3) AS 
 FROM (...) AS subq
 GROUP BY task
 ```
+
+### Do not inline large lists of precomputed IDs
+When a filter depends on transcript shape (message count, metadata, joins), compute it in DQL with `JOIN`/`WHERE`/`GROUP BY` — not by pasting hundreds of UUIDs into `WHERE agent_runs.id IN ('…', '…', …)`. That pattern is hard to maintain, blows query size limits, and usually means the real filter belongs in SQL (see [Counting transcript messages](#counting-transcript-messages)).
 
 ### Avoid Dynamic IN Clauses with String Interpolation
 Building IN clauses with f-strings is dangerous:

@@ -36,7 +36,7 @@ Before Python work, use an existing virtual environment if present. If no enviro
 
 Collect only what is needed to plan:
 
-- API key: prefer `$DOCENT_API_KEY` or an SDK-discovered `docent.env` (current directory upward, then `~/.docent/docent.env`); ask only if neither is available.
+- API key: prefer `$DOCENT_API_KEY` or an SDK-discovered config file. The default global file is `~/.docent/docent.env`; project-level `docent.env` files are supported as local overrides.
 - Data path: the file or directory to ingest.
 - Optional context: what produced the data and what analysis the user wants to do in Docent.
 

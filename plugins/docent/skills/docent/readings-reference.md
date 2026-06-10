@@ -298,6 +298,17 @@ Glob filter rules:
 * Common pitfall: do not set `transcript_group_names=GlobFilter(include=("*",))` when the user asks to render only a specific transcript name. Including all transcript groups makes all visible descendants render, so it can override the intended narrow transcript selection. In that case, make `transcript_group_names` exclude-all and set only `transcript_names=GlobFilter(include=("<requested transcript name>",))`.
 * Transcript group filtering is path-scoped. Including a nested group makes that group and its visible descendants render, and any ancestors needed to reach it may render as wrappers. It does not make sibling branches visible. For example, if `G1` contains both `G2 -> G3` and `G2-prime`, including `G3` can render wrapper groups `G1` and `G2`, but `G2-prime` remains hidden unless it or one of its descendants is independently included.
 
+### Multiple rollouts
+
+If the user asks for multiple rollouts, you can use the `num_rollouts` parameter. Leave it unset (defaults to 1) unless the user explicitly asks.
+```python
+reading = client.read(
+    prompt_template=["Summarize: ", rows.transcript.as_type("transcript")],
+    model="openai/gpt-5.4-mini",
+    num_rollouts=3
+)
+```
+
 ### `client.step_group(label) -> StepGroupContext`
 Opens a labeled step group in the session UI. Use as a context manager to auto-close the group scope:
 ```python
