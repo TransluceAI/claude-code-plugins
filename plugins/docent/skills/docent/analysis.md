@@ -64,7 +64,7 @@ client = Docent.from_url("https://docent.transluce.org/dashboard/668354d8-...")
 ```
 This parses the domain and collection ID from the URL automatically.
 
-The Docent SDK can be configured by a `docent.env` file. The SDK searches from the current working directory upward through parent directories, then falls back to `~/.docent/docent.env` if no local file exists. You do not need to explicitly source `docent.env`. Config files may use INI-style `[section]` headers for multi-profile support; select a profile with `Docent(profile="my-profile")` or the `DOCENT_PROFILE` environment variable.
+The Docent SDK can be configured by a `docent.env` file. The default global config file is `~/.docent/docent.env`. The SDK also honors project-level `docent.env` files from the current working directory upward as local overrides. You do not need to explicitly source `docent.env`. Config files may use INI-style `[section]` headers for multi-profile support; select a profile with `Docent(profile="my-profile")` or the `DOCENT_PROFILE` environment variable.
 
 If you're not sure what collection the user is talking about:
 * If the user provides a Docent dashboard URL (e.g., `https://docent.transluce.org/dashboard/668354d8-...`), use `Docent.from_url()` or extract the collection ID from the last path segment (the UUID).
@@ -80,7 +80,7 @@ If you run into any issues or unexpected behavior with the Docent platform, paus
 * If authentication fails (HTTP 401) or no API key is configured, walk the user through setup:
   1. Open the API keys page for them: `open https://docent.transluce.org/settings/api-keys` (macOS) or `xdg-open https://docent.transluce.org/settings/api-keys` (Linux).
   2. Ask them to create a new API key (it will start with `dk_`).
-  3. Write the key to a local `docent.env` file or `~/.docent/docent.env`: `DOCENT_API_KEY=dk_...` (plus `DOCENT_API_URL` and `DOCENT_FRONTEND_URL` if not using the default instance).
+  3. Write the key to `~/.docent/docent.env`: `DOCENT_API_KEY=dk_...` (plus `DOCENT_API_URL` and `DOCENT_FRONTEND_URL` if not using the default instance). Use a project-level `docent.env` only when the project needs a local override.
   4. Verify connectivity by constructing a `Docent()` client — the constructor validates the API key automatically.
 * If the SDK does not match what's documented here, check whether the SDK is up to date.
 * If the Docent MCP server is available but doesn't match the tools documented here, check whether the MCP server needs an upgrade (`uv tool upgrade docent`). If an upgrade was needed, ask the user to restart the session or MCP server.

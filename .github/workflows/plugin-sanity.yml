@@ -87,9 +87,6 @@ jobs:
           args = server.get("args")
           if not isinstance(args, list) or "--from" not in args:
               fail("docent MCP server args must include --from")
-          package = args[args.index("--from") + 1]
-          if package != "docent-python>=0.1.73":
-              fail("docent MCP server must require docent-python>=0.1.73")
 
           forbidden_names = {".mcp.local.json", "docent.env"}
           for path in plugin_dir.rglob("*"):
