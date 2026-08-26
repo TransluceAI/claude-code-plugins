@@ -35,7 +35,7 @@ These apply throughout the entire analysis session:
   - "multi-approval flow" → "this analysis has two phases — you'll need to approve each one"
   - "metadata fields" / "metadata_json" → describe the actual content ("model name", "safety scores")
 
-  The deeper rule: **describe what you're investigating, not what tools you're running.** Most jargon leaks happen when you narrate your own tool use to the user. The user doesn't need to know which system you're querying or what the query language is called — they need to know what you're learning about their data.
+  The deeper rule: **describe what you're investigating, not what tools you're running.** Most jargon leaks happen when you narrate your own tool use to the user. The user doesn't need to know which system you're querying or what the query language is called — they need to know what you're learning about their data. "What you're investigating" means the concrete object-level goal of the system under study — not an abstracted or sanitized restatement of it. Dropping Docent jargon is necessary but not sufficient: a description can be jargon-free and still fail by hiding the real subject.
 
   Bad — narrates tool use:
   > "Let me run DQL queries to aggregate the metadata fields and check the score distributions across models."
@@ -70,6 +70,8 @@ If you're not sure what collection the user is talking about:
 * If the user provides a Docent dashboard URL (e.g., `https://docent.transluce.org/dashboard/668354d8-...`), use `Docent.from_url()` or extract the collection ID from the last path segment (the UUID).
 * Otherwise, check the SDK-discovered `docent.env` file for `DOCENT_COLLECTION_ID`.
 * If neither is available, ask the user to paste the collection UUID.
+
+Once you know the collection ID and before running any analysis, call `client.ensure_analyzable_collection(collection_id)` and use the returned ID for the rest of the session. If the collection is public and not the user's own (e.g., a shared sample collection like Terminal-Bench), this clones it so the user's analysis lands in their own copy — which appears on their dashboard — instead of being written into the shared collection. If the collection is already the user's, it returns the same ID immediately. When a clone happens, tell the user and link them to the new collection's dashboard URL.
 
 The main Docent deployment lives at https://docent.transluce.org but the user may connect a different deployment by overriding DOCENT_FRONTEND_URL in docent.env. The Docent SDK will print out the frontend URL when it is initialized, e.g. `Authenticating Docent client with frontend_url='https://docent.transluce.org'`. If you see a different frontend URL, use that URL in place of `https://docent.transluce.org` for any links.
 
@@ -113,11 +115,15 @@ A reading is a structured batch of LLM calls. Readings are useful for qualitativ
 
 An analysis script is a Python script you write using the Docent SDK. An analysis script can perform DQL queries (client.query) and readings (client.read).
 
-When you run an analysis script, an analysis plan is displayed in the Docent UI. Each query and reading in the script is displayed as a separate card in the analysis plan. Readings require approval from the user before they are run. Results for both step types (DQL and reading) are displayed in interactive tables.
+When you run an analysis script, an analysis plan is displayed in the Docent UI. Each query and reading in the script is displayed as a separate card in the analysis plan. Reading approval follows the user's account preference unless they explicitly ask you to override it for that plan. Results for both step types (DQL and reading) are displayed in interactive tables.
+
+Every analysis script must include a `client.plan_markdown` note before any `client.query` or `client.read` call. Write the top note from the user's analysis question and the analytical framing you designed in Step 2b. Follow the universal note framework and pattern index in `./readings-reference.md` (`client.plan_markdown`).
 
 Once you have a question where qualitative analysis is clearly required, you can go ahead and create + run an analysis script with readings. If you need the user to clarify or refine the question, do that before writing the script.
 
 Note: the Docent UI is the primary place to view reading results. You do not need to fetch them, read them, and restate them to the user. If a summary or synthesis would be helpful, perform that as another reading in the same analysis script so it will show up in the UI. If a structured aggregation of reading results would be helpful, perform that as another DQL query in the same analysis script.
+
+When writing or revising any rubric, rubric-like classifier prompt, or output schema for a reading, first read `./rubric-writing.md` and apply it. Rubrics should have a concise high-level framing, a natural-language decision tree that another judge can follow consistently, and an output schema whose values are explicitly mapped to the decision procedure.
 
 # Example workflow
 
@@ -132,6 +138,8 @@ This step should feel like a brief conversation, not a long preamble. Target und
 If the user provided a dashboard URL, use `Docent.from_url()` in all scripts throughout the session — this ensures the correct domain and collection are used regardless of what `docent.env` is configured for.
 
 Use the `get_metadata_fields` MCP tool to understand the structure of agent run metadata for the current collection. Agent runs contain metadata that varies by collection — do not make assumptions about its structure.
+
+Before writing any DQL by hand, call the `get_dql_schema` MCP tool, or `client.get_dql_schema(collection_id)` when working in a Python script, for the live table/column schema (names, types, nullability, rubric output fields). Guessed column names are the most common DQL failure; the schema call is sub-second and eliminates them.
 
 Also call `list_reading_presets` to check if the collection has any saved reading presets. These can be reused and are worth knowing about before proposing analysis directions.
 
@@ -279,7 +287,17 @@ Before coding, briefly describe the analytical framing — not the pipeline step
 
 Consult `./readings-reference.md` for the Readings API, coding tips, and example patterns (especially the clustering example). Consult `./dql-reference.md` for DQL syntax, table schemas, and quirks.
 
-Write a Python script implementing the pipeline you designed in Step 2b. Keep the script clean. Do not put exploratory queries in the analysis script — those belong in Step 1 orientation. However, you may add DQL queries to the script to present key findings (e.g. if an important reading outputs categories, you could count the frequency of each category). Do this sparingly, only when it will help the user understand the findings beyond seeing a table of reading results.
+If the script includes a rubric or structured LLM classifier, read `./rubric-writing.md` before drafting it. Apply the rubric refinement rules there: keep the decision procedure concise and unambiguous, calibrate detail to the available evidence, explicitly map output values to decisions, and keep the output schema separate from the rubric text.
+
+Write a Python script implementing the pipeline you designed in Step 2b. Keep the script clean.
+
+You **must** start every script with `client.plan_markdown(...)`. Use two `##` section headings for the markdown note. Typically, for most analysis plans you can use `Behavior` and `Measurement` for the two headings, but feel free to improvise if you believe a different heading is more suitable, or add more headings if necessary (do this sparingly). For example, if the analysis involves rubric-refinement, use `## Current rubric` instead of `## Measurement`, and describe the full rubric instead of using a summary.
+
+Write the markdown note by referencing the user's question and your Step 2b framing before you add `client.query` or `client.read` calls. Use simple language, but keep it concrete and faithful to the subject matter.
+
+Write the markdown note in a narrative style. For example, don't say: "How severe BAD_BEHAVIOR is in flagged conversations". Say: "We investigate how severe BAD_BEHAVIOR is in flagged conversations. We do this by XYZ".
+
+You may add DQL queries to the script to present key findings (e.g. if an important reading outputs categories, you could count the frequency of each category). Do this sparingly, only when it will help the user understand the findings beyond seeing a table of reading results.
 
 If you feel the urge to write substantial Python logic (clustering, scoring, statistical tests), go back to the **translation table in Step 2b** and express the work as LLM analyses and DQL aggregations instead.
 
@@ -302,7 +320,7 @@ Do not write a script covering all phases at once. A monolithic script that fail
 
 Analysis plans appear in a web UI for the user to approve — this is a key control affordance. You are responsible for running analysis scripts when appropriate; the user should not have to do so manually. Prefer to run analysis scripts in the background, so that you can still communicate with the user if the script pauses to wait for approval.
 
-**Surface the Docent UI link as soon as the analysis is submitted** — don't wait until results come back. The SDK's `flush()` opens a browser tab, but the user may not notice or may lose it among other tabs. Always tell the user explicitly: "The analysis is running — you can follow along and approve it here: [link]." This is especially important because the link is how the user inspects the evidence behind every finding.
+**Surface the Docent UI link as soon as the analysis is submitted** — don't wait until results come back. The SDK's `flush()` opens a browser tab in local sessions, but the user may not notice it or may lose it among other tabs, so always surface the URL yourself. In sandboxed sessions where `webbrowser.open()` can't reach the user's browser (e.g. Codex CLI), provide a clickable link instead. Always tell the user explicitly: "The analysis is running — you can follow along and approve it here: [link]." This is especially important because the link is how the user inspects the evidence behind every finding.
 
 **Be explicit about partial data.** When `get_reading_plan_results` returns truncated output (e.g., 50 of 132 results visible), state the exact fraction you saw and caveat derived numbers. Prefer using query aggregation over `reading_results.output` to get complete counts rather than parsing truncated tool output. For example, to get the full distribution of a structured output field across all results, query `reading_results` directly:
 

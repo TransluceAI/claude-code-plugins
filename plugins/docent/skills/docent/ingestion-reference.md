@@ -468,5 +468,5 @@ print(f"Source records: {len(raw_data)}")
 print(f"Converted: {len(agent_runs)}")
 print(f"Failed conversions: {len(conversion_errors)}")
 print(f"Uploaded count: {uploaded_count if uploaded_count is not None else 'unknown'}")
-print(f"Collection URL: https://docent.transluce.org/collection/{collection_id}")
+print(f"Collection URL: https://docent.transluce.org/dashboard/{collection_id}")
 ```
