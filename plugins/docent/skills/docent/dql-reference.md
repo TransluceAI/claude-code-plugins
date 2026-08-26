@@ -38,6 +38,8 @@ raw_rows = client.dql_result_to_dicts(result)
 
 ## Available Tables and Columns
 
+The authoritative schema is the live one: call the `get_dql_schema` MCP tool (or `client.get_dql_schema(collection_id)` in scripts) to get every queryable table with column types and nullability. The tables below are a reference snapshot and may lag the deployment.
+
 | Table | Description |
 | --- | --- |
 | `agent_runs` | Information about each agent run in a collection. |
@@ -47,6 +49,10 @@ raw_rows = client.dql_result_to_dicts(result)
 | `readings` | Reading definitions (template or scripted LLM analysis). |
 | `reading_results` | Results from running readings. |
 | `reading_result_links` | Junction table linking readings to their results. |
+| `reading_plans` | Analysis plans (name + ordered steps) that orchestrate readings. |
+| `reading_presets` | Named reading configurations; the human-readable reading name lives here. |
+| `reading_preset_versions` | Immutable per-version reading configuration for a preset. |
+| `collections` | The current collection's own row (name, description, metadata). |
 
 ### `agent_runs`
 
@@ -114,7 +120,8 @@ raw_rows = client.dql_result_to_dicts(result)
 | `output_schema` | JSON schema for output validation. |
 | `max_new_tokens` | Maximum number of new tokens generated per LLM call. |
 | `num_rollouts` | Number of independent LLM samples generated per input row (>= 1). |
-| `source_reading_preset_id` | Optional associated preset. |
+| `source_reading_preset_id` | Optional associated preset. Join to `reading_presets.id` to get the reading's name. |
+| `source_reading_preset_version` | Version of the associated preset; matches `reading_preset_versions.version_index`. |
 | `created_at` | When the reading was created. |
 
 ### `reading_results`
@@ -155,6 +162,60 @@ For scripted readings, `arguments_dict` holds arbitrary user-supplied metadata p
 | `result_id` | FK to reading_results.id. |
 | `rollout_index` | 0-based position of this rollout within the reading's group for the same input row. Range `[0, readings.num_rollouts)`. |
 
+### `reading_plans`
+
+| Column | Description |
+| --- | --- |
+| `id` | Plan identifier (UUID). |
+| `collection_id` | Collection that owns the plan. |
+| `name` | Optional plan name. |
+| `steps_json` | Ordered JSON list of plan steps. |
+| `created_at` | When the plan was created. |
+| `created_by` | User who created the plan. |
+| `updated_at` | Last modification time. |
+
+### `reading_presets`
+
+`readings` has no name column — the human-readable name lives here. Join
+`readings.source_reading_preset_id = reading_presets.id`.
+
+| Column | Description |
+| --- | --- |
+| `id` | Preset identifier (UUID). |
+| `collection_id` | Collection that owns the preset. |
+| `name` | Human-readable reading name (unique per collection). |
+| `created_at` | When the preset was created. |
+| `created_by` | User who created the preset. |
+| `updated_at` | Last modification time. |
+
+### `reading_preset_versions`
+
+| Column | Description |
+| --- | --- |
+| `reading_preset_id` | FK to reading_presets.id (part of composite PK). |
+| `version_index` | Version number within the preset (part of composite PK). Matches `readings.source_reading_preset_version`. |
+| `prompt_template_segments` | JSON template segments for this version. |
+| `context_configs` | JSON context configs for this version. |
+| `model_json` | Model configuration for this version. |
+| `output_schema` | JSON schema for output validation. |
+| `max_new_tokens` | Maximum new tokens per LLM call. |
+| `created_at` | When the version was created. |
+
+### `collections`
+
+Always scoped to the current collection, so this table returns at most one row.
+
+| Column | Description |
+| --- | --- |
+| `id` | Collection identifier. |
+| `name` | Collection name. |
+| `description` | Collection description. |
+| `created_by` | User who created the collection. |
+| `created_at` | When the collection was created. |
+| `metadata_json` | JSONB metadata for the collection. |
+| `is_clone` | True when the collection was created by cloning another. |
+| `source_collection_id` | Collection this one was cloned from, when applicable. |
+
 ## JSON Metadata Access Patterns
 
 Docent stores user-supplied metadata as JSON. Access using Postgres operators:
@@ -189,7 +250,7 @@ WHERE meta->>'status' = 'flagged';
 SELECT
   AVG(CAST(metadata_json->>'latency_ms' AS DOUBLE PRECISION)) AS avg_latency_ms
 FROM agent_runs
-WHERE metadata_json ? 'latency_ms';
+WHERE metadata_json->>'latency_ms' IS NOT NULL;
 ```
 
 When querying JSON fields, comparisons default to string semantics. Cast values when you need numeric ordering or aggregation.
@@ -251,8 +312,8 @@ Express filters like “≥10 messages” in DQL with the pattern above. Do not 
 | Boolean logic (`AND`, `OR`, `NOT`) |
 | Comparison operators (`=`, `!=`, `<`, `<=`, `>`, `>=`, `IS`, `IS NOT`, `IS DISTINCT FROM`, `IN`, `BETWEEN`, `LIKE`, `ILIKE`, `EXISTS`, `SIMILAR TO`, `~`, `~*`, `!~`, `!~*`) |
 | Arithmetic & math (`+`, `-`, `*`, `/`, `%`, `POWER`, `ABS`, `SIGN`, `SQRT`, `LN`, `LOG`, `EXP`, `GREATEST`, `LEAST`, `FLOOR`, `CEIL`, `ROUND`, `RANDOM`) |
-| String helpers (`SUBSTRING`, `LEFT`, `RIGHT`, `LENGTH`, `UPPER`, `LOWER`, `INITCAP`, `TRIM`, `REPLACE`, `SPLIT_PART`, `POSITION`, `CONCAT`, `CONCAT_WS`, `STRING_AGG`) |
-| JSON operators & functions (`->`, `->>`, `#>`, `#>>`, `@>`, `?`, `?|`, `?&`, `jsonb_build_object`, `jsonb_build_array`, `jsonb_array_length`, `json_agg`, `jsonb_agg`, `json_object_agg`, `jsonb_set`, `jsonb_path_query`, `jsonb_path_exists`, `convert_from`, `convert_to`) |
+| String helpers (`SUBSTRING`, `LEFT`, `RIGHT`, `LENGTH`, `UPPER`, `LOWER`, `INITCAP`, `TRIM`, `REPLACE`, `SPLIT_PART`, `POSITION`, `CONCAT`, `CONCAT_WS`, `STRING_AGG`, `MD5`) |
+| JSON operators & functions (`->`, `->>`, `#>`, `#>>`, `@>`, `?`, `jsonb_build_object`, `jsonb_build_array`, `jsonb_array_length`, `json_agg`, `jsonb_agg`, `json_object_agg`, `jsonb_set`, `jsonb_path_query`, `jsonb_path_exists`, `convert_from`, `convert_to`) |
 | Date/time basics (`CURRENT_DATE`, `CURRENT_TIME`, `CURRENT_TIMESTAMP`, `NOW()`, `EXTRACT`, `DATE_TRUNC`, `AGE`, `AT TIME ZONE`, `timezone()`) |
 | Interval arithmetic (`timestamp +/- INTERVAL`, `INTERVAL` literals, `MAKE_INTERVAL`, `JUSTIFY_DAYS`, `JUSTIFY_HOURS`, `JUSTIFY_INTERVAL`) |
 | Construction & conversion (`MAKE_DATE`, `MAKE_TIME`, `MAKE_TIMESTAMP`, `MAKE_TIMESTAMPTZ`, `TO_CHAR`, `TO_DATE`, `TO_TIMESTAMP`, `DATE_PART`) |
@@ -277,6 +338,28 @@ ORDER BY created_at DESC
 LIMIT 10;
 ```
 
+### Random Sample of Transcripts
+
+```sql
+SELECT transcripts.id AS transcript
+FROM transcripts
+ORDER BY RANDOM()
+LIMIT 100;
+```
+
+Use `ORDER BY RANDOM()` to draw a random sample. Do not sample by ordering on an id column (e.g. `ORDER BY transcripts.id LIMIT 100`): it returns the same rows every time, and ordering a `LIMIT` query on an indexed id column leads the planner to scan the table by that index rather than the collection's index, which can hit the query timeout even on small collections.
+
+### Reproducible Random Sample of Transcripts
+
+```sql
+SELECT transcripts.id AS transcript
+FROM transcripts
+ORDER BY MD5(CONCAT(transcripts.id, 'my-seed'))
+LIMIT 100;
+```
+
+When you need the same sample on every run (e.g. so an analysis is reproducible), hash the id together with a fixed seed string instead of using `ORDER BY RANDOM()`. The same seed always yields the same sample; change the seed string to draw a different one. Like `RANDOM()`, the hash is not indexable, so it avoids the id-ordering timeout above.
+
 ### Transcript Counts per Group
 
 ```sql
@@ -299,7 +382,7 @@ WITH normalized_runs AS (
     metadata_json->>'environment' AS environment,
     metadata_json->>'status' AS status
   FROM agent_runs
-  WHERE metadata_json ? 'environment'
+  WHERE metadata_json->>'environment' IS NOT NULL
 )
 SELECT
   environment,
@@ -314,6 +397,17 @@ GROUP BY environment
 ORDER BY total_runs DESC;
 ```
 
+
+### Finding a Reading by Name
+
+Reading names live on `reading_presets`, not `readings`:
+
+```sql
+SELECT r.id AS reading_id, rp.name, r.source_reading_preset_version
+FROM readings r
+JOIN reading_presets rp ON rp.id = r.source_reading_preset_id
+WHERE rp.name = 'my-analysis';
+```
 
 ### Reading Results for a Specific Reading
 
@@ -428,6 +522,40 @@ positional identity across readings.
 - **Type awareness**: Cast values explicitly when precision matters.
 - **Reading results: filter by completion.** Querying `reading_results` will include pending and failed rollouts by default. Add `WHERE rr.output IS NOT NULL AND (rr.error IS NULL OR rr.error::text = 'null')` to any aggregation that should ignore them.
 
+## Performance, routing, and the query timeout
+
+Every DQL query is killed after **15 seconds**. On a large collection (tens of thousands of runs or more), a query can blow past that and fail — so query _shape_ matters, not just correctness.
+
+**The mechanism, so you can reason about it:** a query that reads **only** from `agent_runs` runs on a fast path, so even a metadata filter over a large collection is cheap. As soon as a query _also_ references another table — `reading_results`, `transcripts`, `judge_results`, etc. — it drops off that fast path; and if it is _filtering_ `agent_runs` by metadata, that filter then scans **every run** in the collection. Rule of thumb: **isolate the most selective filter into its own step, then join the rest against that small result** — drive from whichever side is narrower (the two shapes below).
+
+**The pattern:** the two shapes are equally valid — pick by where the selectivity is:
+
+**a) The `agent_runs` metadata filter is the selective side.** Select those runs in a single-table `agent_runs` step (that step can use the fast path), then join the other tables onto the small set:
+
+```sql
+-- Step 1 — single table on agent_runs (a scalar `->>` filter uses the fast path):
+SELECT agent_runs.id AS run_id
+FROM agent_runs
+WHERE agent_runs.metadata_json->>'variant' = 'treatment';
+-- Step 2 joins reading outputs against the runs from step 1, not the whole collection.
+```
+
+**b) The other table is the selective side** (a specific reading, specific transcripts). Filter it first, then match `agent_runs` by id — an indexed lookup, no full scan:
+
+```sql
+SELECT ar.metadata_json->>'variant', rr.output->>'label'
+FROM reading_results rr
+JOIN reading_result_links rrl ON rrl.result_id = rr.id
+JOIN agent_runs ar ON rr.arguments_dict->'agent_run'->>'id' = CAST(ar.id AS TEXT)  -- 'agent_run' = the reading's run slot
+WHERE rrl.reading_id = '<reading-id>';   -- narrow set; agent_runs reached by id
+```
+
+Either way, **do the selection once and compute all your metrics in one pass** — not one multi-table query per metric, each re-scanning the whole collection. And reach for a split only when a query is actually slow: a multi-table query that's already narrow on one side is fine as-is.
+
+_(Array-containment like `metadata_json->'field' @> '[…]'` isn't fast-path routable — that selection runs the slow way regardless, so the win there is doing it once instead of per metric.)_
+
+**If a query times out,** the error includes a note on why it couldn't use the fast path and, where there is one, the fix: which other tables it references and how to restructure around the narrower side, which metadata field the fast path doesn't cover, or which construct to rewrite (e.g. `->>` instead of `->`, `LIKE` instead of `SIMILAR TO`). Use it to decide what to change — though some fall-offs are limitations you can only work around, not fix.
+
 ## DQL quirks
 
 ### No Wildcards Allowed
@@ -510,4 +638,4 @@ ROUND(CAST(AVG(...) AS NUMERIC), 3)
 ### JSON Access Patterns
 - Nested: `metadata_json->'parent'->>'child'`
 - Flat key with dot: `metadata_json->>'parent.child'`
-- Check key existence: `metadata_json ? 'key'`
+- Check key presence: `metadata_json->>'key' IS NOT NULL` (preferred over `metadata_json ? 'key'` — the two differ only for keys holding JSON `null`, and the `IS NOT NULL` form is the one that means "the key has a usable value")

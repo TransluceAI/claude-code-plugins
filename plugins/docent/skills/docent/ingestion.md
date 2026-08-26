@@ -13,7 +13,8 @@ Keep the main workflow lightweight. Load `./ingestion-reference.md` only when yo
 
 - Work in four stages: context, planning, ingestion, verification.
 - Create and maintain `ingestion-plan.md` in the working directory.
-- Do not upload until the user confirms the proposed collection name, Docent hierarchy, field mappings, and omitted data.
+- Before uploading, resolve whether the ingestion plan requires confirmation. An explicit user instruction to auto-approve or require review takes precedence. Otherwise, use `client.get_preferences().auto_approve_plans`. When auto-approval is off or the preference cannot be read, wait for the user to confirm the proposed collection name, Docent hierarchy, field mappings, and omitted data.
+- Auto-approval skips the plan confirmation pause; it does not permit guessing through material ambiguity, ignoring conversion failures, or silently dropping source data.
 - Never silently skip source data. Any file or field not ingested must be documented with a reason and expected impact.
 - Save ingestion code to a file such as `ingest.py` or `ingest_<collection_name>.py`; do not rely on one-off inline Python for the final upload path.
 - Use `parse_chat_message` from the Docent SDK for transcript messages, and make deliberate role mappings when the source roles differ from Docent's supported roles.
@@ -39,6 +40,15 @@ Collect only what is needed to plan:
 - API key: prefer `$DOCENT_API_KEY` or an SDK-discovered config file. The default global file is `~/.docent/docent.env`; project-level `docent.env` files are supported as local overrides.
 - Data path: the file or directory to ingest.
 - Optional context: what produced the data and what analysis the user wants to do in Docent.
+
+After initializing the SDK client, resolve the approval behavior once for the workflow:
+
+```python
+preferences = client.get_preferences()
+auto_approve_plan = preferences.auto_approve_plans
+```
+
+An explicit request such as "auto-approve this ingestion plan" or "show me the ingestion plan before uploading" overrides the account preference. A general request to ingest data is not itself an approval override. If the installed SDK does not expose `get_preferences()` or the preference request fails, require confirmation unless the user explicitly requested auto-approval.
 
 Create `ingestion-plan.md` with this compact structure and append findings as the workflow proceeds:
 
@@ -76,7 +86,8 @@ Create `ingestion-plan.md` with this compact structure and append findings as th
 - Collection name:
 - Data context:
 - Analysis goals:
-- User confirmed:
+- Approval mode and source:
+- User confirmed, if required:
 
 ## Execution Log
 
@@ -140,7 +151,7 @@ For tree or branching data, usually ingest each branch as its own `AgentRun` and
 
 ### Confirmation Gate
 
-Before writing the final upload script, present the plan and wait for user confirmation. Include:
+Before writing the final upload script, summarize:
 
 - Source structure and detected data type
 - Proposed collection name
@@ -150,6 +161,8 @@ Before writing the final upload script, present the plan and wait for user confi
 - Expected source record count, if available
 - Your understanding of the data context and analysis goals
 
+If approval is required, present the summary and wait for user confirmation. If the plan is auto-approved, record that fact and its source in `ingestion-plan.md`, share the summary as a progress update, and continue without pausing.
+
 ## Stage 3: Ingestion
 
 For Inspect `.eval` files, use the built-in loader and proceed directly to sanity checks. See `./ingestion-reference.md` for the import pattern.
@@ -157,14 +170,14 @@ For Inspect `.eval` files, use the built-in loader and proceed directly to sanit
 For custom data:
 
 1. Write an ingestion script to the filesystem.
-2. Load raw source records according to the confirmed file structure.
+2. Load raw source records according to the approved file structure.
 3. Convert a small sample into `AgentRun` objects.
 4. Manually inspect sample turns with reasoning and tool calls to verify reasoning
    was represented, merged, or intentionally omitted according to the plan.
 5. Fix sample conversion issues.
 6. Convert the full dataset and record conversion failures.
 7. Run `check_agent_runs(agent_runs)` and inspect the formatted report.
-8. Upload only after the conversion output and warnings match the confirmed plan.
+8. Upload only after the conversion output and warnings match the approved plan.
 
 If a failure is not easily recoverable, such as unexpected data shape, authentication failure, API error, or ambiguous SDK error, stop and ask the user how they want to proceed. Include the exact error and the affected file or record when possible.
 
@@ -189,5 +202,7 @@ After upload, verify and log:
 - Whether source, converted, and uploaded counts match expectations
 - Any accepted sanity warnings
 - Collection URL
+
+Surface the collection URL to the user: in local sessions the SDK opens it in the default browser, but also provide a clickable link. In sandboxed sessions where `webbrowser.open()` can't reach the user's browser (e.g. Codex CLI), provide a clickable link instead. See "Opening Docent pages" in `SKILL.md`.
 
 If the SDK cannot verify the uploaded count, provide the collection URL and record that manual verification is needed.
