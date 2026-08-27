@@ -1,7 +1,7 @@
 ---
 description: Configure Docent session logging — within the enabled rollout, sessions where Docent tools are used are shared by default; opt out, opt back in, or delete uploaded data here.
 disable-model-invocation: true
-allowed-tools: Bash(uv tool run --quiet --from 'docent-python>=0.1.82' python:*)
+allowed-tools: Bash(uv tool run --quiet --from 'docent-python>=0.1.83' python:*)
 ---
 
 You are helping the user configure Docent session logging. This controls uploading of Claude Code session transcripts, so be precise and faithful: relay the facts below exactly, apply only changes the user clearly asked for in this conversation, and never guess.
@@ -11,7 +11,7 @@ You are helping the user configure Docent session logging. This controls uploadi
 Run the status command and present its output:
 
 ```
-uv tool run --quiet --from 'docent-python>=0.1.82' python -m docent.plugin.logging_config status
+uv tool run --quiet --from 'docent-python>=0.1.83' python -m docent.plugin.logging_config status
 ```
 
 ## 2. Make sure the user knows what session sharing means
@@ -29,7 +29,7 @@ Ask which they'd like: opt out, opt back in, or delete already-uploaded data. If
 
 ## 4. Apply their choice
 
-Use exactly one CLI invocation per choice (all via `uv tool run --quiet --from 'docent-python>=0.1.82' python -m docent.plugin.logging_config ...`):
+Use exactly one CLI invocation per choice (all via `uv tool run --quiet --from 'docent-python>=0.1.83' python -m docent.plugin.logging_config ...`):
 
 - `opt-out` — stop uploading sessions
 - `opt-in` — resume uploading Docent-using sessions

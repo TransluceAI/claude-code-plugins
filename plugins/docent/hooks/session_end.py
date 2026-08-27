@@ -22,7 +22,7 @@ import os
 import subprocess
 import sys
 
-UPLOADER_REQUIREMENT = "docent-python>=0.1.82"
+UPLOADER_REQUIREMENT = "docent-python>=0.1.83"
 
 
 def _spawn_detached(args: list[str]) -> None:
