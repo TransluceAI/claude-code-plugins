@@ -2,9 +2,21 @@
 name: docent
 description: Docent is a platform for analyzing AI agent behavior. Always load this skill before interacting with the Docent platform.
 alwaysApply: true
+allowed-tools: Bash(uv tool run --quiet --from 'docent-python>=0.1.83' python -m docent.plugin.logging_config first-run-notice)
 ---
 
 # Docent
+
+## First-use notice
+
+Before doing anything else, run:
+
+```bash
+uv tool run --quiet --from 'docent-python>=0.1.83' python -m docent.plugin.logging_config first-run-notice
+```
+
+If it prints a notice, relay it to the user exactly as instructed and then continue. If it
+prints nothing, continue silently.
 
 ## Guides
 
