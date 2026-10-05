@@ -1,0 +1,204 @@
+---
+title: "Entities and custom types"
+description: "Stored records with identities of their own: when to define one, how to store and load it, and how it differs from a struct in an array."
+---
+
+An **entity** is a stored record with a type and an **ID derived from its content**. Where an
+array holds many regular values addressed by key, an entity is a single thing you can point at.
+Arrays hold references to entities, entities can hold references to other entities, and the viewer
+knows how to follow every reference and show what it finds.
+
+Entities are for three kinds of data:
+
+* **Large objects you want to refer to later as a whole.** A conversation transcript, a document,
+  a generated report. You pass references around and load the content only where it's needed.
+* **Objects with irregular structure.** Array values must follow one fixed schema, but an entity
+  can hold a tagged union, nested optional parts, or a blob of JSON, because it is serialized as a
+  unit rather than laid out in columns.
+* **Things other objects should point to.** A judge's verdict about a transcript naturally
+  references the transcript. A result should reference the configuration that produced it. Entity
+  references make these links explicit, and the viewer renders them as links you can click.
+
+Because an entity's ID is a hash of its content, identical content always has the same ID and is
+stored once. Storing the same model configuration from a hundred steps costs one record, and two
+jobs that reference it reference the very same thing.
+
+## Defining entities
+
+Most entity types are frozen dataclasses that inherit from `DataclassEntity`:
+
+```python
+from dataclasses import dataclass
+
+from fxtr.core.entities import BoundID
+from fxtr.entity_defns.dataclass_entity import DataclassEntity
+
+
+@dataclass(frozen=True)
+class ModelConfig(DataclassEntity, fxtr_type="org.example.qa.ModelConfig.v1"):
+    model_name: str
+    temperature: float
+
+
+@dataclass(frozen=True)
+class Answer(DataclassEntity, fxtr_type="org.example.qa.Answer.v1"):
+    config: BoundID[ModelConfig]
+    question: str
+    text: str
+```
+
+The `fxtr_type` keyword is the entity's **type tag**. Every entity type must have one, it must be
+unique, and it is how the system refers to the type everywhere: in storage, in array schemas, and
+in the viewer, where renderers are keyed by it. Use a reverse-domain name, and include a version so
+that a changed type can be introduced under a new name while old records keep theirs.
+
+Fields may be primitives, tuples and frozen sets, nested dataclasses, `BoundID[T]` references to
+other entities, nullable and union types, and recursive JSON values. The `Answer` above points at
+its `ModelConfig` by reference, so every answer records exactly which configuration produced it
+without copying the configuration into every record.
+
+### Inline tagged unions
+
+A field whose value can be one of several shapes, say a step outcome that is either a score or a
+refusal, is written as a union of **tagged dataclasses**. A `TaggedDataclass` carries a type tag
+like an entity does, but it is not stored on its own: it is serialized inline, inside whatever
+entity contains it, and the tag tells the loader which variant it is reading.
+
+```python
+from fxtr.entity_defns.dataclass_bases import TaggedDataclass
+
+
+@dataclass(frozen=True)
+class Scored(TaggedDataclass, fxtr_type="org.example.qa.Scored.v1"):
+    score: float
+
+
+@dataclass(frozen=True)
+class Refused(TaggedDataclass, fxtr_type="org.example.qa.Refused.v1"):
+    reason: str
+
+
+@dataclass(frozen=True)
+class Verdict(DataclassEntity, fxtr_type="org.example.qa.Verdict.v1"):
+    answer: BoundID[Answer]
+    outcome: Scored | Refused
+```
+
+This is the kind of structure an array value cannot hold, and one of the main reasons to reach for
+an entity.
+
+<Note>
+  fxtr currently converts dataclasses to and from their stored form with the
+  [cattrs](https://catt.rs/) library, with strict settings: unknown fields, missing fields, and
+  values of the wrong type are rejected rather than coerced. This implementation detail may change
+  in a future version; the dataclass surface described here is what to rely on.
+</Note>
+
+### Advanced use: low-level entity classes
+
+Underneath the dataclass layer, an entity is defined by one ability: it can serialize itself to a
+canonical form, and something can deserialize that form back into an object. The canonical form is
+a tree of plain values (`None`, numbers, booleans, strings, bytes, lists, string-keyed mappings,
+and entity IDs) with a `$type` key holding the type tag, encoded as DAG-CBOR and hashed to produce
+the ID. Any class can be an entity by subclassing `Entity` and implementing its abstract methods:
+
+```python
+from fxtr.core.entities import Entity, StaticTypeLoader
+
+
+class PointLoader(StaticTypeLoader["Point"]):
+    _static_type_id = "org.example.geometry.Point.v1"
+
+    def convert(self, data):
+        return Point(data["x"], data["y"])
+
+
+class Point(Entity):
+    def __init__(self, x: float, y: float):
+        self.x, self.y = x, y
+
+    @classmethod
+    def fxtr_type_id(cls):
+        return "org.example.geometry.Point.v1"
+
+    def _fxtr_serialize(self):
+        return {"$type": "org.example.geometry.Point.v1", "x": self.x, "y": self.y}
+
+    def _fxtr_loader(self):
+        return PointLoader()
+```
+
+`_fxtr_serialize` produces the canonical form and `_fxtr_loader` names the **loader** that turns
+it back into an object. A loader's `convert` receives the stored data and returns the value;
+`StaticTypeLoader` is the base for a loader that handles exactly one type tag.
+
+Note that the low-level protocol is usually unnecessary; prefer to use `DataclassEntity` if possible.
+
+## Storing and loading entities
+
+Storing an entity returns a `BoundID`: the entity's ID together with the loader that knows how to
+read it back. You can store from a step context, a workflow context, or the project client in a
+launcher, and all three expose the same two methods:
+
+```python
+ref = await context.store(ModelConfig(model_name="gpt-6-luna", temperature=0.2))
+config = await context.load(ref)
+```
+
+A `BoundID` is cheap to pass around and to put in other entities and arrays. A bare `EntityID`,
+such as one read out of an array of untyped IDs, needs its type to be loaded:
+`await context.load(entity_id, as_type=ModelConfig)`.
+
+The only way to get an entity back is to have its ID, and storing an entity gives it no name and
+puts it in no list you can browse. So for an entity to be retrievable later, something that is
+itself persisted in the database must reference it: a job's inputs, which the job records; a
+job's results, which hold the references of the entities steps return; or a project array. An
+entity that nothing references can't be found again, so when you store entities in a launcher,
+pass the references on as a job input or write them into a project array.
+
+### Entities in arrays
+
+Arrays hold references, never entities themselves. The common pattern is to store each entity and
+then build the array from the references, with `BoundID[T]` as the value type:
+
+```python
+refs = [((name,), await client.store(config)) for name, config in configs.items()]
+models = Array.from_items(refs, ("[model: str]", BoundID[ModelConfig]))
+```
+
+Two shorthands cover the step side. A step annotated to **receive** an entity, as in
+`config: ModelConfig`, gets the loaded object rather than the reference. A step annotated to
+**return** an entity type, as in `-> Answer`, may return the entity itself: fxtr stores it and
+records the reference as the step's result, so the mapped results of such a step form an array of
+`BoundID[Answer]` without any explicit store calls.
+
+## Entities versus array structs
+
+There are two ways to put structured data in an array: a **struct value**, written as a
+`TypedDict`, whose fields live inside the array as columns, or an **entity**, stored separately
+and referenced by ID. The rule of thumb:
+
+* Use a **struct** when the data is regular and exists to organize values for this step or
+  workflow, without needing an identity of its own. "A collection of an X and a Y", dataset rows,
+  sweep coordinates, numbers extracted for aggregation, summary statistics.
+* Use an **entity** when you want to refer to the thing by ID and point at it from elsewhere, when
+  it is naturally a single thing rather than a collection of values (a transcript, a verdict, a
+  configuration, a report), or when its shape is irregular.
+
+The practical differences follow from that:
+
+|                | Struct value                                        | Entity                                             |
+| -------------- | --------------------------------------------------- | -------------------------------------------------- |
+| Identity       | None of its own; lives inside its array             | Its own ID; identical content stored once          |
+| In a workflow  | Fields visible: `handle.field("score")` selects one | Opaque: a step that takes it depends on all of it  |
+| In the viewer  | Shown as columns of the array                       | Linked, and shown by a renderer chosen by its type |
+| Allowed shapes | Primitives, lists, nested `TypedDict`s, nullables   | Any dataclass fields, including unions             |
+
+A step can combine the two: store an entity for the record that deserves one, and return a struct
+row holding the fields you'll aggregate next to a `BoundID` pointing at the entity. The aggregation
+then reads columns, and anyone who wants the detail follows the reference.
+
+<Note>
+  Coming soon: We plan to make it possible to efficiently extract parts of entities into an array struct, to
+  make it possible to efficiently process and summarize individual fields of entity data.
+</Note>

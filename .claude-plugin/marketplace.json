@@ -16,6 +16,16 @@
         "name": "TransluceAI"
       },
       "tags": ["analysis", "ai", "mcp", "ingestion"]
+    },
+    {
+      "name": "fxtr",
+      "source": "./plugins/fxtr",
+      "description": "Skills for writing, running, and viewing fxtr experiments, and for calling models from them with behaviors",
+      "version": "0.1.0",
+      "author": {
+        "name": "TransluceAI"
+      },
+      "tags": ["experiments", "skills"]
     }
   ]
 }

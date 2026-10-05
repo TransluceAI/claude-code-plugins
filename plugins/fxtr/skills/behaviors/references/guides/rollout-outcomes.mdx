@@ -1,0 +1,77 @@
+---
+title: "Rollout outcomes and retries"
+description: "How a rollout ends, how model call failures are retried, recorded, or raised, and how to watch a rollout as it runs."
+---
+
+A rollout can end in more ways than a completed conversation, and a model call can fail. This page
+covers what a returned `ChatRollout` says about how it ended, how behaviors retries and records
+failures, and what that means for a fxtr step that returns the rollout.
+
+## How a rollout ends
+
+A rollout's `status` is one of:
+
+* `RolloutCompleted`: the context policy ended the rollout with `EndRollout`, which is recorded
+  on the rollout's `end`.
+* `RolloutMaxTurns`: the rollout reached `run_chat_rollout`'s `max_turns`.
+* `RolloutFailed`: a model call failed in a category the rollout records (see
+  [Recorded failures](#recorded-failures)).
+
+Check the status before treating a rollout as a successful observation. `max_turns` counts
+completed **model** turns, and the limit is checked before the policy is asked for its next turn.
+So a script with exactly N prompts and `max_turns=N` ends as `RolloutMaxTurns` without the policy
+being asked for its final `EndRollout`: allow one more turn, `max_turns=N + 1`, when how the policy
+ends matters. With `max_turns=None`, the default, the runner imposes no limit.
+
+A model turn's stop reason, such as `StopMaxTokens`, is separate from the rollout's status: a
+completed rollout can still contain a reply cut off at the token limit.
+
+## Failures and retries
+
+A model call's expected failures are returned as data: `ModelAPI.generate` returns a
+`ModelCallFailure` with a `category` (`context_length`, `content_filter`, `rate_limited`,
+`overloaded`, `authentication`, `invalid_request`, or `server_error`), a `description`, and the
+provider's HTTP status. An error in the implementation itself raises. The provider adapters turn
+off their SDKs' own retries, so that these settings decide every attempt:
+
+* A session of `chat_session_model_from_api` has **no retry schedule by default** (`retry=None`).
+  Pass `retry=RetryConfig()` to retry failures in `failure_categories_to_retry`, by default
+  `DEFAULT_FAILURE_CATEGORIES_TO_RETRY`: `rate_limited`, `overloaded`, and `server_error`.
+* For one request, `generate_with_retries(api, request, retry=..., failure_categories_to_retry=...)`
+  takes the same settings, both required, as in the
+  [judge step](language-models.mdx#a-judge-step). Once attempts run out, it returns
+  the last failure.
+
+`RetryConfig` sets the schedule: `max_attempts` (3 by default, counting the first),
+`initial_backoff_seconds` (1), `backoff_base` (3), `max_backoff_seconds` (120), and
+`jitter_seconds` (up to 5 seconds added to every wait at random).
+
+## Recorded failures
+
+When a session's model call still fails after its retries, `run_chat_rollout` either records the
+failure or raises it. By default, `failure_categories_to_record=("context_length",)`: a rollout
+whose context outgrows the model's window is returned as `RolloutFailed`, with the conversation so
+far, including the context turn the model never answered. A failure in any other category raises
+`ModelCallFailedError`, unless you add its category to `failure_categories_to_record`.
+
+A recorded failure is a returned value, so a fxtr step that returns the rollout succeeds, and fxtr
+caches the failed rollout as the step's result (see
+[Failures: return or raise?](../../../fxtr/references/concepts/workflows-and-steps.mdx#failures-return-or-raise)). Record
+a category only for failures every attempt would reproduce, and decide deliberately how scoring
+treats them, as missing or as failed, rather than scoring them as successes.
+
+## Watching a rollout as it runs
+
+Pass an async `event_callback` to `run_chat_rollout` to receive the rollout's events as they
+happen:
+
+* `ContextTurnEvent` and `ModelTurnEvent`, each carrying a completed turn, the same object that
+  lands on the returned rollout;
+* `ModelStreamEvent`, carrying a delta of the model's output while it generates a turn, when the
+  model's session streams (sessions of a streaming adapter, such as the provider adapters, do).
+
+The callback is awaited in order, on the rollout's own path: a slow callback slows the rollout,
+and one that raises aborts it. Deltas can describe output that a retry then discards:
+`StreamRestart` tells a consumer to reset what it has assembled of the turn so far. The completed
+turns and the returned rollout are the durable content, and how the rollout ended is its returned
+status, not an event.

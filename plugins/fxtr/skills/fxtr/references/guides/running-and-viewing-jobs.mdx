@@ -1,0 +1,238 @@
+---
+title: "Running and viewing jobs"
+description: "Launch jobs from Python or the command line, watch them in the viewer, read their results, and resume, inspect, or share them."
+---
+
+Every job runs on the project's Postgres database, configured by `fxtr init` (see the
+[installation guide](../installation.mdx)). Launchers talk to it through the **project client**, which
+stores entities and manages jobs, project arrays, and the cache, and the project's **viewer** shows
+its jobs as they run and after they finish.
+
+## Before you launch
+
+* Commit first. A launch records the commit it runs and checks that the virtual environment
+  matches `uv.lock`, so it refuses uncommitted changes. Pass `allow_staged=True` (or
+  `--allow-staged` on the command line) to include staged changes; `run_job`, `launch_cli`,
+  `client.submit`, and `client.resume` all take it. `verify_environment=False` on
+  `open_local_client` or `launch_cli` (`--no-verify` on the command line) skips the check of the
+  environment, but never the pinning of the commit. Each attempt at a job records the commit it
+  ran and whether the environment was checked.
+* Register your modules. Resuming a job, `fxtr run`, and the viewer import the modules in
+  `[tool.fxtr] modules`, not your launcher, so every step and workflow a job uses must be defined
+  in one of them.
+* Use a scratch schema for trials. To keep trial jobs and cache entries apart from real
+  results, set `schema` in `fxtr.local.toml` to another name while experimenting (or run
+  `fxtr init` again with the same `--database-url`, another `--schema`, and `--force`), and set it
+  back for real runs.
+* Start the viewer and leave it running, so each launch opens its job in it (see
+  [Watch jobs in the viewer](#watch-jobs-in-the-viewer)).
+
+## Launch from Python
+
+The simplest launcher calls `launch_cli`, which opens the client, submits the job, opens it in the
+project's running viewer, waits, and reports the result:
+
+```python launch.py
+from fxtr.entity_defns.array import Array
+from fxtr.project.running import launch_cli
+from my_project.experiment import experiment
+
+if __name__ == "__main__":
+    prompts = Array.from_items(
+        [(("greeting",), "Hello there"), (("question",), "Why?")],
+        ("[prompt: str]", str),
+    )
+    launch_cli(experiment, {"prompts": prompts}, anchor=__file__, max_concurrency=8)
+```
+
+`anchor=__file__` tells fxtr which project the launcher belongs to. `max_concurrency` caps how
+many steps run at once; workflow functions don't count against it. If the job doesn't succeed,
+`launch_cli` exits with status 1.
+
+For more control, such as choosing the `root`, loading datasets, or reading results, write an
+async launcher with `open_local_client` and `run_job`:
+
+```python launch.py
+import anyio
+
+from fxtr.entity_defns.array import Array
+from fxtr.project.running import open_local_client, run_job
+from my_project.experiment import experiment
+
+
+async def main() -> None:
+    prompts = Array.from_items(
+        [(("greeting",), "Hello there"), (("question",), "Why?")],
+        ("[prompt: str]", str),
+    )
+    async with open_local_client(__file__, max_concurrency=8) as client:
+        result = await run_job(client, experiment, {"prompts": prompts}, root="word-count-v1")
+        print(list(result.items()))
+
+
+if __name__ == "__main__":
+    anyio.run(main)
+```
+
+* `run_job` opens the job in a new tab of the project's running viewer (`uv run fxtr view`) and
+  prints its link before waiting, then the job's status and result; with no viewer running, it
+  prints how to start one. `open_browser=False`, or `FXTR_NO_BROWSER=1` in the environment, only
+  prints the link. It raises `JobNotFinishedError` if the job doesn't succeed.
+* `root` is the root workflow's pathname, and so the start of every cache address in the job.
+  See [Managing the step cache](../concepts/managing-the-step-cache.mdx).
+* Use `handle = await client.submit(...)` when you need the job's ID or want to control the
+  waiting yourself; `await wait_for_job(client, handle)` provides the same reporting as
+  `run_job`.
+* In a notebook, call `await main()` instead of `anyio.run(main)`.
+
+## Watch jobs in the viewer
+
+Start the viewer from the project, in a terminal of its own, and leave it running:
+
+```bash
+uv run fxtr view
+```
+
+It selects a local port and opens the viewer in your browser; running it again while the
+project's viewer runs opens that one. The [CLI reference](../reference/cli.mdx#viewer) has its
+options. Each job you launch opens in a new tab of it, at the link the launcher prints, such as
+`http://127.0.0.1:8000/#job=<job id>`, and you can pick any of the project's jobs from the menu
+above the minimap. A job that's still running updates live.
+
+For one job, the viewer shows:
+
+* **The tree of workflow invocations.** The root workflow at the top, with each child workflow
+  one level down. A mapped child appears once per key.
+* **A card for every step and child workflow** a workflow scheduled, showing its docstring, how it
+  was mapped, its progress, and its log lines. A card links to the function's code in your editor.
+* **The arrays each operation received and produced**, as tables you can page through and slice
+  by dimension. A value that references an entity is a link.
+* **Entity details**, opened from any link, in a pane you can keep alongside the trace. Hovering a
+  link shows a preview.
+* **Your project's README**, linked from the side rail.
+
+The first sentence of each step's and workflow's docstring is what appears on its card, so write
+those as short imperative sentences that tell a reader what the operation does, such as "Compute
+mean scores across judges." Leave out edge cases and what the step is mapped over, which the card
+already shows. For progress worth reading while a step runs, write log lines with
+`context.log(...)`.
+
+All of this is drawn by the viewer's default renderers until the project adds its own, which can
+also give the root workflow a results overview: a view of the run that presents its results. See
+[Visualization and custom renderers](../concepts/visualization-and-custom-renderers.mdx).
+
+## Read results
+
+`run_job` returns the root workflow's result as an `Array`. Entity values in it are bare IDs, so
+load them with their type.
+
+Have the root workflow return one **report** entity that references every result you want to
+present. The launcher then gets the whole run from one result, and a
+[results overview](../concepts/visualization-and-custom-renderers.mdx#results-overviews) in the
+viewer can read everything from it:
+
+```python
+@dataclass(frozen=True)
+class Report(DataclassEntity, fxtr_type="org.example.qa.Report.v1"):
+    scores: BoundID[Array[float]]
+    summary: BoundID[Array[float]]
+
+
+@workflow(name="qa.evaluate")
+async def evaluate(context: WorkflowContext, ...) -> Report:
+    """Score every answer and summarize the scores per model."""
+    scores = context.run_step("scores", score, {...}, map_over=["model", "task"])
+    summary = context.run_step("summary", summarize, {"scores": scores}, map_over=["model"])
+    return Report(
+        scores=await context.store(await scores.observe()),
+        summary=await context.store(await summary.observe()),
+    )
+```
+
+Observing inside the workflow is fine here: nothing computes from the report, and each array it
+references is still a step output in the graph. The launcher loads the report, then each array it
+references:
+
+```python
+report = await client.load(result.item(), as_type=Report)
+scores = await client.load(report.scores)  # references inside a loaded entity are bound
+```
+
+Keep the client open while loading. Alternatively, pass an async `on_result(storage, result)`
+callback to `run_job` or `launch_cli`; it replaces the default result printing and runs while
+storage is open. Leaving the client's `async with` block waits for the jobs it started; leaving it
+with an exception cancels them.
+
+## Launch from the command line
+
+`fxtr run` launches a workflow by its registered name:
+
+```bash
+uv run fxtr run word_count.experiment --input prompts=@word_count_prompts --root word-count-v1
+```
+
+Inputs are JSON scalars, or `@NAME` for a snapshot of a
+[project array](importing-external-datasets.mdx#project-arrays). Anything richer needs a launcher script.
+
+## Resume a stopped job
+
+A job stops when it can't make further progress: a step raised, a step is in cache conflict, or
+the job was cancelled. Resume it with its ID, which the launcher prints:
+
+```bash
+uv run fxtr resume 3fa3df92-2edb-4088-9e1f-a99d28b7ec77
+```
+
+Resuming uses the job's stored inputs and your registered modules, records the current commit,
+reuses every result the job already has, and retries unfinished work, including steps that
+raised. From Python:
+
+```python
+import uuid
+
+from fxtr.project.client import JobID
+from fxtr.project.running import wait_for_job
+
+handle = await client.resume(JobID(uuid.UUID("3fa3df92-2edb-4088-9e1f-a99d28b7ec77")))
+result = await wait_for_job(client, handle)
+```
+
+Add `--overwrite-cache-conflicts` (`overwrite_cache_conflicts=True` in Python) to rerun the
+steps in cache conflict and replace their old results (see
+[Resolving a job's conflicts](../concepts/managing-the-step-cache.mdx#resolving-a-jobs-conflicts)). A resume
+continues the same job, so it can't change what the job already did; to change the experiment,
+launch a new job, which reuses every unchanged step's result.
+
+Resume refuses a job that already succeeded, and a job another process is running. Once that
+process has been silent for `[tool.fxtr] stale_after` seconds (30 by default), fxtr treats the job
+as abandoned, and resume takes it over.
+
+## Inspect and cancel jobs
+
+| Command                              | Python                                                 | Purpose                                      |
+| ------------------------------------ | ------------------------------------------------------ | -------------------------------------------- |
+| `fxtr jobs list`                     | `await client.list_jobs()`                             | Every job, newest first.                     |
+| `fxtr jobs status JOB`               | `await handle.status()`                                | Where a job is, and why it stopped.          |
+| `fxtr jobs cancel JOB`               | `await handle.cancel()`                                | Ask the process running a job to stop it.    |
+| `fxtr cache list`                    | `await client.list_cache_entries(prefix=...)`          | The cache's entries.                         |
+| `fxtr cache list --conflicts-in JOB` | `await client.list_cache_entries(conflicts_in=job_id)` | The entries a job is in cache conflict with. |
+
+In Python, `handle = await client.job(job_id)` attaches to an existing job without starting it.
+
+## Share a job with another project
+
+A finished job can be written to a file and imported into another copy of the project, for
+example a collaborator's, with its results and everything they reference:
+
+```bash
+uv run fxtr jobs export 3fa3df92-2edb-4088-9e1f-a99d28b7ec77 results/qa-v1.car
+uv run fxtr jobs import results/qa-v1.car --adopt-cache   # in the other project
+```
+
+The record carries, for every result, the commit that produced it, and the importing project's
+repository must contain those commits, so share the code as well as the file. An imported job
+appears in the viewer and can be resumed like any other. By default its results stay out of the
+step cache; `--adopt-cache` puts them in, so new jobs in the importing project reuse them (see
+[Reusing another job's results](../concepts/managing-the-step-cache.mdx#reusing-another-jobs-results)).
+To refresh a job that was imported earlier from a later record of it, import with `--update`.
+From Python, the client has `export_job(job_id, path)` and `import_job(path, update=...)`.

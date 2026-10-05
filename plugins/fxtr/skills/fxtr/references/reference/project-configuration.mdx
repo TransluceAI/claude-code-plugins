@@ -1,0 +1,136 @@
+---
+title: "Project configuration"
+description: "What fxtr new writes, and the settings in pyproject.toml and fxtr.local.toml."
+---
+
+A fxtr project is a uv project whose Python package defines steps and workflows. Two files beside
+each other configure it: `pyproject.toml`, which is committed and shared by every checkout of the
+project, and `fxtr.local.toml`, which says where this machine reaches the project's database and
+is never committed.
+
+fxtr finds a project by walking up to the nearest `pyproject.toml`: from a launcher, starting at
+the path it passes as its anchor (usually its own `__file__`), and from the `fxtr` command, at the
+working directory (or `--project`). That file must have a `[tool.fxtr]` table; if it doesn't, fxtr
+reports an error rather than looking further up.
+
+## What `fxtr new` writes
+
+`uvx fxtr new DIRECTORY` writes a project into a new or empty directory (from a project that
+already depends on fxtr, `uv run fxtr new` does the same):
+
+```text
+pyproject.toml            the project, its dependency on fxtr, and [tool.fxtr]
+README.md                 how to run it
+.gitignore                fxtr.local.toml, .venv/, __pycache__/, .fxtr/ (where `fxtr view`
+                          records its address), node_modules/, and dist/
+src/my_project/
+    __init__.py
+views/                    the renderer package, with an empty bundle
+    vendor/fxtr/          the fxtr TypeScript packages the renderers build against
+```
+
+* The project is named after the directory, unless `--name` gives another name: `My_Project` is
+  the project `my-project`, whose code is the package `my_project`.
+* It depends on the fxtr that ran `fxtr new`, or a later version.
+* A new project has no experiment or launcher, and its `[tool.fxtr] modules` list is empty.
+  `--example` adds a greeting experiment in `src/<package>/experiment.py` (an entity type, a step,
+  and a workflow), registers that module, and adds `launch.py`, which runs it. It also
+  adds renderers for the greeting and a results overview of the workflow,
+  `views/src/overview.tsx`.
+* `views/` has its own pnpm workspace boundary, lockfile, and installation, so installing its
+  dependencies never changes a workspace the project sits in.
+* It runs `git init`, unless the directory is already in a git or jj checkout, and prints the
+  next steps. Run `uv sync` in the project to install its dependencies and write the virtual
+  environment and `uv.lock`.
+
+## `pyproject.toml`
+
+The file `fxtr new` writes, without its comments:
+
+```toml pyproject.toml
+[project]
+name = "my-project"
+version = "0.1.0"
+description = "A fxtr project"
+requires-python = ">=3.13"
+dependencies = ["fxtr[runner,debug-web]>=0.1.0"]
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/my_project"]
+
+[tool.fxtr]
+modules = []
+
+[tool.fxtr.views]
+package = "views"
+```
+
+<ResponseField name="[tool.fxtr] modules" type="list of module names" default="[]">
+  The modules whose import registers the project's steps and workflows. A process with no script
+  of its own imports them: a resumed job, `fxtr run`, and the viewer. Add each experiment module
+  you write to this list. A step or workflow that no listed module registers can still run in a
+  job launched by a script that imports it, but that job can't be resumed, `fxtr run` can't find
+  the workflow, and the viewer can't link its cards to the code.
+</ResponseField>
+
+<ResponseField name="[tool.fxtr] stale_after" type="number of seconds" default="30">
+  How long a job's lease may go without a heartbeat before fxtr presumes the process running it
+  is gone, and a resume may take the job over. Every process of a project must agree on it.
+</ResponseField>
+
+<ResponseField name="[tool.fxtr.views] package" type="path">
+  The directory of the project's renderer package, relative to the project root. Without this
+  table the project has no renderers of its own, and the viewer uses its defaults.
+</ResponseField>
+
+The other settings are uv's and Python packaging's, chosen for fxtr:
+
+* `package = true` installs the project into its own virtual environment, so that the `fxtr`
+  command, which has no project directory on its import path, can import the modules in
+  `[tool.fxtr] modules`. Keep the definitions under `src/<package>/` and launcher scripts at the
+  project root.
+* The `runner` extra is the Postgres runner, and `debug-web` is the viewer that `fxtr view`
+  serves.
+
+An experiment that calls language models also depends on
+[behaviors](../../../behaviors/references/guides/language-models.mdx#set-up). A launch checks that the virtual
+environment matches `uv.lock`, so commit `uv.lock` whenever the dependencies change (`uv add` and
+`uv sync` update both).
+
+## `fxtr.local.toml`
+
+`uv run fxtr init --database-url URL` writes this file and creates the project's tables:
+
+```toml fxtr.local.toml
+database_url = "postgresql+asyncpg://fxtr:fxtr@localhost:55433/fxtr"
+schema = "fxtr_my_project"
+```
+
+<ResponseField name="database_url" type="string">
+  A SQLAlchemy `postgresql+asyncpg://...` URL for the project's Postgres server. Required unless
+  the `FXTR_DATABASE_URL` environment variable is set, which overrides it.
+</ResponseField>
+
+<ResponseField name="schema" type="string">
+  The Postgres schema the project's tables live in: lowercase letters, digits, and `_`, not
+  starting with a digit, and at most 63 characters. By default it is `fxtr_` followed by the
+  project's name, lowercased, with every character other than a letter, digit, or `_` replaced by
+  `_`. `fxtr init --schema` writes another.
+</ResponseField>
+
+`fxtr init --force` replaces an existing file. Everything the project stores lives in its schema:
+jobs, project arrays, entities, and the step cache. Resuming or viewing a job therefore needs the
+configuration that launched it. The project's client creates the tables when they are missing, but
+it doesn't start the server or create the database. To keep trial runs apart from real results,
+point the project at a scratch schema while experimenting (see
+[Before you launch](../guides/running-and-viewing-jobs.mdx#before-you-launch)).
+
+fxtr reads both files strictly: a setting it doesn't know, or a value of the wrong type, is an
+error, so a misspelled setting is never silently ignored.

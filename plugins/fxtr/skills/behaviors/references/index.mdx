@@ -1,0 +1,40 @@
+---
+title: "Introduction"
+description: "Primitives for evaluating AI model behavior."
+---
+
+<Note>
+  The behaviors library documentation is still under construction.
+</Note>
+
+**behaviors** is a Python library for building AI evaluations. It provides model adapters,
+multi-turn conversations, user and tool policies, and structured conversation records.
+Use it to sample a model, simulate an interaction, or ask a model to judge another model's
+output.
+
+You control the messages, tools, and stopping conditions of an interaction. behaviors handles
+the conversation loop and provides configurable retries and failure recording. It supplies no
+general-purpose judge and no model-driven user simulator: you write those for your experiment
+from its interfaces, as the [judge step](guides/language-models.mdx#a-judge-step) does.
+
+behaviors works with [fxtr](../../fxtr/references/index.mdx): conversation records can be stored as fxtr entities,
+returned from steps, and inspected in the experiment viewer. fxtr manages the experiment's
+execution, caching, and provenance. For the shortest example of a step that calls a model, see
+[Steps](../../fxtr/references/concepts/workflows-and-steps.mdx#steps) in the fxtr concepts.
+
+<Columns cols={2}>
+  <Card title="Calling language models" icon="comments" href="guides/language-models.mdx">
+    Set up behaviors, run conversations, and judge their outputs in fxtr steps.
+  </Card>
+
+  <Card title="Install fxtr" icon="download" href="../../fxtr/references/installation.mdx">
+    Set up the project that runs and stores your experiments.
+  </Card>
+</Columns>
+
+The other guides go further: [choosing models](guides/choosing-models.mdx),
+[policies and tools](guides/policies-and-tools.mdx),
+[rollout outcomes and retries](guides/rollout-outcomes.mdx),
+[conversation records and checkpoints](guides/conversation-records.mdx), and
+[Docent readings](guides/docent-readings.mdx). The
+[API overview](reference/api.mdx) maps the library's layers and types.

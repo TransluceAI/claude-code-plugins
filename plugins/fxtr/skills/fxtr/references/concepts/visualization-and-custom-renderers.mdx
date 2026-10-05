@@ -1,0 +1,108 @@
+---
+title: "Visualization and custom renderers"
+description: "How the viewer draws a job, and how renderers teach it to show your own types, steps, and results."
+---
+
+fxtr's web **viewer** shows a job as it runs and after it finishes: the graph of workflows and
+steps, the arrays flowing between them, and the entities they reference (see
+[Watch jobs in the viewer](../guides/running-and-viewing-jobs.mdx#watch-jobs-in-the-viewer)). Everything has a
+default rendering, so a new project gets a usable viewer with no extra work. You can customize the visualization by writing **renderers**,
+small React components that take over how a particular entity type, step, or workflow is shown,
+which fxtr loads into the viewer alongside its own.
+
+## Renderers, slots, and subjects
+
+The viewer decides how to draw each thing by looking up a renderer for it. A renderer is
+registered for a **slot**, which is a place in the viewer where something is drawn, and a
+**subject**, which says what kind of thing it draws there:
+
+| Slot                 | Where it appears                                                  | Subject                                  |
+| -------------------- | ----------------------------------------------------------------- | ---------------------------------------- |
+| `EntityPanel`        | An entity opened in the detail pane                               | The entity's type tag                    |
+| `EntityInlineLink`   | An entity where it is referenced, as a link                       | The entity's type tag                    |
+| `EntityHoverPreview` | A compact card shown when a link is hovered                       | The entity's type tag                    |
+| `InvocationPanel`    | A full-pane view of one or more invocations of a step or workflow | The step's or workflow's registered name |
+
+For entities, the subject is the `fxtr_type` string from the entity's definition, which is why
+every entity type needs one. For invocations, it is the `name=` given to `@step` or `@workflow` (or, by default, the Python function's module-qualified name).
+If no renderer is registered for a subject, the viewer falls back to generic ones that can be used with any value.
+Several renderers may target the same slot and subject, in which case the viewer offers a switcher.
+
+A renderer is worth writing when an entity holds a lot of data, or when some of its fields deserve
+more emphasis than others. A renderer for an entity type is an ordinary component that receives
+the entity's ID:
+
+```tsx views/src/answer.tsx
+import { EntityLink, unwrap, useEntity, type EntityID, type EntityViewProps } from "fxtr-view";
+import { FieldList, Kind, layout } from "fxtr-view-kit";
+
+interface AnswerData {
+  config: EntityID;
+  question: string;
+  text: string;
+}
+
+export function AnswerPanel({ id }: EntityViewProps) {
+  const answer = unwrap(useEntity(id as EntityID<AnswerData>));
+  return (
+    <div className={layout.panel}>
+      <div className={layout.kindLine}><Kind>Answer</Kind></div>
+      <h2 className={layout.title}>{answer.question}</h2>
+      <p className={layout.prose}>{answer.text}</p>
+      <FieldList fields={[["config", <EntityLink id={answer.config} />]]} />
+    </div>
+  );
+}
+```
+
+`unwrap(useEntity(id))` returns the entity's decoded data, or suspends until it arrives, so the
+component body can assume the data is there and leave the loading state to the viewer. The data is
+the entity's stored form: a map with the entity's fields, where references to other entities arrive
+as `EntityID`s that `EntityLink` turns into links.
+
+The project's **bundle** collects its renderers, registering each with its slot, its subject, an
+ID, and the component:
+
+```ts views/src/bundle.ts
+import { EntityPanel, InvocationPanel, renderer, type ViewBundle } from "fxtr-view";
+import { singleInvocation } from "fxtr-view-kit";
+import { AnswerPanel } from "./answer";
+import { Overview } from "./overview";
+
+const bundle: ViewBundle = {
+  renderers: [
+    renderer(EntityPanel, "org.example.qa.Answer.v1", "my-project.AnswerPanel", AnswerPanel),
+    renderer(InvocationPanel, "qa.evaluate", "my-project.Overview", singleInvocation(Overview)),
+  ],
+};
+
+export default bundle;
+```
+
+Renderers are built with two libraries. **`fxtr-view`** is the small, stable contract between a
+renderer and the viewer: the slots, `renderer(...)`, and hooks for loading data and linking to
+entities. **`fxtr-view-kit`** has building blocks that match the viewer: layout classes, chart
+parts and controls, number formats, and adapters for showing invocations and loading many entities
+at once. The [renderer reference](../reference/renderers.mdx) describes both, with the rules for
+registering renderers.
+
+## Results overviews
+
+The most valuable renderer in most projects is an `InvocationPanel` for the **root workflow**, like
+the `Overview` registered above. The viewer offers it as a full-pane view of the whole run, in
+place of the trace, and it is where you present the experiment's results: the charts, tables, and
+comparisons someone would want to see first. It usually reads a **report** entity that the root
+workflow returns, which references every result array worth presenting, so one load gives the
+overview everything it needs (see [Read results](../guides/running-and-viewing-jobs.mdx#read-results)).
+`fxtr new --example` writes a small one, `views/src/overview.tsx`, and
+[Designing views](../guides/designing-views.mdx) covers what to show in one and how to draw it.
+
+## Renderer packages and view bundles
+
+A project's renderers live in a TypeScript package of their own, `views/` in a project created by
+`fxtr new`, which is built into a **view bundle** that the viewer loads at runtime. The viewer
+hands the bundle its own copies of React and `fxtr-view`, so renderers share its state and context,
+and nothing about a project is compiled into the viewer, so one viewer serves every project. While
+it runs, `fxtr view` rebuilds the bundle whenever the renderers' sources change, and open pages
+switch to each new build in place. [The renderer package](../reference/renderers.mdx#the-renderer-package)
+covers its parts, building it, and what to do when the bundle doesn't load.
