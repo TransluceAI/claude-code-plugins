@@ -1,0 +1,8 @@
+{
+  "name": "fxtr",
+  "description": "Write, run, and view fxtr experiments",
+  "author": {
+    "name": "TransluceAI"
+  },
+  "version": "0.1.0"
+}

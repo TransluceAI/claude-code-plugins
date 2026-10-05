@@ -1,0 +1,137 @@
+---
+title: "Core concepts"
+description: "How projects, steps, workflows, jobs, arrays, and entities fit together."
+---
+
+## The mental model
+
+A fxtr experiment has two halves:
+
+* The **experiment code** is a program describing the computation you want to run: which steps
+  to call, on which data, in what order. Experiment code is stored in a git repo (the "project repo"),
+  and serves as the source of truth of what the experiment does.
+* The **job record** is what actually happened when the experiment code ran, including a trace of
+  all steps and workflows that were executed, along with their inputs and results. Job records are
+  stored in the experiment database, and can also be exported to files (or imported from files).
+
+When you launch an experiment, fxtr runs the code and builds the record as it goes, as a graph
+connecting every input, operation, and result. The record lives in the project's database, so
+you can inspect it in the viewer, resume it after an interruption, and reuse its expensive results
+in later runs.
+
+The concept pages that follow build this picture up one layer at a time:
+
+1. [Workflows and steps](workflows-and-steps.mdx): how the experiment code is
+   structured, and the rules each kind of function follows.
+2. [Arrays and parallel computations](arrays-and-parallel-computations.mdx): the data
+   model, and how a step is mapped over data to express a sweep.
+3. [Entities and custom types](entities-and-custom-types.mdx): stored records with
+   identities of their own, for transcripts, verdicts, configurations, and reports.
+4. [Managing the step cache](managing-the-step-cache.mdx): how results are reused
+   across jobs, and how to control that.
+5. [Visualization and custom renderers](visualization-and-custom-renderers.mdx): how
+   the viewer draws a job, and how to teach it about your types.
+
+## Glossary
+
+<ResponseField name="Project">
+  A uv project whose Python package defines steps and workflows. It's configured by
+  `[tool.fxtr]` in `pyproject.toml`, and by `fxtr.local.toml`, which says where this machine
+  reaches the project's Postgres database.
+</ResponseField>
+
+<ResponseField name="Step">
+  One unit of computation (`@step`), such as a model call, a judgment, or a reduction. A step
+  receives concrete data, returns a result, and can't schedule further work. Its result is
+  cached. See [Workflows and steps](workflows-and-steps.mdx).
+</ResponseField>
+
+<ResponseField name="Workflow">
+  Deterministic code (`@workflow`) that schedules steps and child workflows, building the
+  experiment's graph. A workflow works with handles to data rather than the data itself, and can
+  wait for a result when it needs one to decide what to do next.
+</ResponseField>
+
+<ResponseField name="Array">
+  A collection of values of one schema, indexed by named dimensions such as `model` or
+  `prompt`. Every input and output of a step or workflow is an array; a single value is an array
+  with no dimensions. See [Arrays and parallel computations](arrays-and-parallel-computations.mdx).
+</ResponseField>
+
+<ResponseField name="Handle">
+  A workflow's reference to an array that may not be computed yet, such as a step's future
+  result. Its dimensions and schema are known immediately, so the workflow can pass it on to
+  further steps before the data exists.
+</ResponseField>
+
+<ResponseField name="Query">
+  A filter, projection, aggregation, or join over arrays, written with the query builder or in
+  SQL. In a step a query runs at once; in a workflow it becomes a node of the graph that the
+  runner computes when its inputs are ready.
+</ResponseField>
+
+<ResponseField name="Entity">
+  A stored record, such as a conversation or a judge's verdict, with a type and an ID derived
+  from its content. Arrays hold references to entities, and the viewer links to them. See
+  [Entities and custom types](entities-and-custom-types.mdx).
+</ResponseField>
+
+<ResponseField name="Job">
+  One durable execution of a root workflow on a set of input arrays. A job records its progress
+  as it runs, so it can be inspected while running and resumed if it stops. See
+  [Running and viewing jobs](../guides/running-and-viewing-jobs.mdx).
+</ResponseField>
+
+<ResponseField name="Project array">
+  A named, typed, editable array kept in the project's database. A launch takes an immutable
+  snapshot of it to pass as a job input, so a dataset can be curated over time while every job
+  records exactly the version it ran on.
+</ResponseField>
+
+<ResponseField name="Pathname">
+  A human-readable address for each workflow, step, and source array within a job, such as
+  `root/evaluate/sample[task:"a"]`. It is built from the names you give each operation.
+</ResponseField>
+
+<ResponseField name="Cache address">
+  Where a step's result is stored: its pathname, unless you override it. A step reuses a cached
+  result when its address holds one computed from the same step and inputs. See
+  [Managing the step cache](managing-the-step-cache.mdx).
+</ResponseField>
+
+<ResponseField name="Viewer">
+  A web app, started with `fxtr view`, that shows a project's jobs: each workflow's graph, the
+  arrays flowing through it, and the entities they reference, through renderers you can
+  customize. See [Watch jobs in the viewer](../guides/running-and-viewing-jobs.mdx#watch-jobs-in-the-viewer)
+  and [Visualization and custom renderers](visualization-and-custom-renderers.mdx).
+</ResponseField>
+
+## Why steps and workflows are separate
+
+The split lets fxtr resume jobs and show how each result was produced:
+
+* Steps hold the expensive, nondeterministic work, such as sampling a model, calling an API, or
+  drawing a random number. fxtr stores every step's result, so this work isn't repeated when a job
+  resumes or a later job asks for the same thing.
+* Workflows hold the cheap, deterministic decisions about what to run. A workflow makes the same
+  decisions given the same inputs and results, so fxtr can replay it against the recorded results
+  to rebuild the graph, and check that the rebuilt graph matches.
+
+Between the stored results and the recorded graph, fxtr knows which step produced each value,
+what that step received, and which workflow asked for it.
+
+## Hermeticity
+
+For the job record to be a faithful account of an experiment, the experiment code has to depend
+on nothing the record doesn't capture. So steps and workflows should be **hermetic**: they read no files
+from the machine they run on, consult no machine-specific state, and reach the outside world only
+through stateless services such as model APIs, using credentials supplied by the environment. Code
+written this way could run in a sandbox on another machine and produce an equivalent result, which
+is exactly what happens when a colleague resumes your job or a later job reuses your cached
+results.
+
+The place for reading local data is the **launcher**, the script that starts a job. It reads and
+validates files, turns them into typed arrays, and passes them in as the root workflow's inputs,
+or stores them as project arrays for jobs to snapshot. Either way the data becomes part of the
+record. [Workflows and steps](workflows-and-steps.mdx#hermeticity-and-handling-external-state)
+spells out the rules.

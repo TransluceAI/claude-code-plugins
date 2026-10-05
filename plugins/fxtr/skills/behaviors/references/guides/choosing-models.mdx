@@ -1,0 +1,110 @@
+---
+title: "Choosing models"
+description: "Find the exact model IDs a provider offers your account, pick the adapter for its endpoint, and check a model before a sweep."
+---
+
+behaviors takes a provider's model ID as given: it has no catalog of models, and it passes the
+string to the provider's endpoint without checking it against a list or translating it. Choose
+the provider and endpoint first, then get the exact model ID from that provider's listing API.
+Use the returned `id`, not a display name; the same model can have different IDs at different
+providers. When you've been asked for a particular model, keep it, and verify its ID rather than
+substituting another.
+
+The examples below use `curl` and `jq`, with API keys already set in the named environment
+variables. They only list model metadata. Use the same credentials and endpoint as the
+experiment, since a listing shows what that account can use. An authentication or permission
+error does not mean that no models exist.
+
+## OpenAI
+
+[List models](https://developers.openai.com/api/reference/resources/models/methods/list)
+with `GET https://api.openai.com/v1/models`:
+
+```bash
+curl --fail-with-body --silent --show-error https://api.openai.com/v1/models \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -o /tmp/openai-models.json &&
+jq -r '.data[].id' /tmp/openai-models.json | sort
+```
+
+Use a returned ID with `OpenAIResponsesAPI(model_id)` for models supporting the Responses API, or
+`OpenAICompatibleAPI(model_id)` for Chat Completions. The listing includes models for other
+tasks too; check a model's supported endpoints and features in the
+[model catalog](https://developers.openai.com/api/docs/models) before choosing an adapter.
+
+## Anthropic
+
+[List models](https://platform.claude.com/docs/en/api/models/list)
+with `GET https://api.anthropic.com/v1/models`:
+
+```bash
+curl --fail-with-body --silent --show-error 'https://api.anthropic.com/v1/models?limit=1000' \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H 'anthropic-version: 2023-06-01' \
+  -o /tmp/anthropic-models.json &&
+jq -r '.data[] | [.id, .display_name] | @tsv' /tmp/anthropic-models.json &&
+jq '{has_more, last_id}' /tmp/anthropic-models.json
+```
+
+This is one page, even with `limit=1000`. While `has_more` is true, request the next page with
+`after_id` set to the returned `last_id`, and collect its models before advancing again.
+Pass a returned `id` to `AnthropicMessagesAPI(model_id)`; `display_name` is only for presentation.
+
+## OpenRouter
+
+OpenRouter serves models from multiple vendors through an OpenAI-compatible endpoint. Its
+[general catalog API](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties)
+is `GET https://openrouter.ai/api/v1/models`; the
+[account-filtered listing](https://openrouter.ai/docs/api/api-reference/models/list-models-filtered-by-user-provider-preferences-privacy-settings-and-guardrails)
+also applies your provider preferences, privacy settings, and guardrails:
+
+```bash
+curl --fail-with-body --silent --show-error https://openrouter.ai/api/v1/models/user \
+  -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+  -o /tmp/openrouter-models.json &&
+jq -r '.data[] | [.id, .name] | @tsv' /tmp/openrouter-models.json
+```
+
+For the general catalog, change `/models/user` to `/models`. The
+[model browser](https://openrouter.ai/models) is useful for interactive search. Inspect
+`architecture`, `context_length`, and `supported_parameters` in the JSON for candidate models.
+Use the full returned `id`, including its vendor prefix and any suffix, with:
+
+```python
+import os
+
+from behaviors.implementations.models.openai_compatible import OpenAICompatibleAPI
+
+api = OpenAICompatibleAPI(
+    model_id,  # Exact id selected from the OpenRouter listing.
+    base_url="https://openrouter.ai/api/v1",
+    api_key=os.environ["OPENROUTER_API_KEY"],
+)
+```
+
+The OpenAI SDK does not read `OPENROUTER_API_KEY` by itself, so pass it explicitly as above.
+Close the adapter with `await api.aclose()` when finished, as in the
+[conversation step](language-models.mdx#a-conversation-as-a-step).
+
+## Search and validate a candidate
+
+Search a saved response by ID or display name, changing the file and search text as needed:
+
+```bash
+jq -r --arg query 'claude' '
+  .data[]
+  | select(([.id, (.name // .display_name // "")] | join(" ") | ascii_downcase)
+      | contains($query | ascii_downcase))
+  | .id
+' /tmp/openrouter-models.json
+```
+
+For paginated responses, search every collected page. A catalog entry does not establish that
+the model supports every feature the experiment needs. Check its support for the endpoint,
+streaming, tools, and reasoning, then try the chosen adapter and sampling settings with a small
+request before launching a sweep. Without credentials, the providers' published catalogs and
+documentation give candidate IDs, but not whether your account can use them.
+
+Keep the chosen provider, model ID, and request settings in the experiment's configuration
+inputs, so that each run records what was selected (see
+[A conversation as a step](language-models.mdx#a-conversation-as-a-step)).

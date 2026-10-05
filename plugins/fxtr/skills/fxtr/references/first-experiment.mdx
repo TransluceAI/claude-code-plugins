@@ -1,0 +1,250 @@
+---
+title: "Your first experiment"
+description: "Write a small experiment with a mapped step and a reduction, launch it, and see how caching works."
+---
+
+This tutorial starts with an empty project and builds an experiment that counts the words in
+each prompt in a dataset, then averages the counts. There are no model calls. It has the same
+shape as many experiments: a step mapped over a dataset, followed by a step that reduces the
+results.
+
+This assumes you have completed [Installation](installation.mdx) and have a database running.
+
+## Create a project and connect it to the database
+
+Create a new project in a new or empty directory. Use your existing database's URL; the command
+below uses the local database from the installation guide:
+
+```bash
+uvx fxtr new ~/code/my-project
+cd ~/code/my-project
+uv sync
+(cd views && pnpm install)
+uv run fxtr init --database-url postgresql+asyncpg://fxtr:fxtr@localhost:55433/fxtr
+```
+
+`fxtr new` creates an empty Python package under `src/my_project/`, project configuration, and
+an empty renderer bundle, and initializes git. `uv sync` installs the project's Python
+dependencies. There is no experiment or launcher yet; you will write both below.
+The `pnpm install` command installs dependencies for the project's renderer bundle; commit its
+lockfile with your experiment.
+
+`fxtr init` writes the database connection to `fxtr.local.toml` and creates the project's
+tables. That file is gitignored because the connection is specific to this machine. Run the
+remaining commands from the new project directory.
+
+## Write the experiment
+
+Create `src/my_project/word_count.py`:
+
+```python src/my_project/word_count.py
+from typing import Annotated
+
+from fxtr.entity_defns.array import Array
+from fxtr.experiment.handles import ArrayHandle
+from fxtr.experiment.steps import StepContext, step
+from fxtr.experiment.workflows import WorkflowContext, workflow
+
+
+@step(name="word_count.count")
+async def count_words(context: StepContext, prompt: str) -> int:
+    """Count the whitespace-separated words in a prompt."""
+    return len(prompt.split())
+
+
+@step(name="word_count.mean")
+async def mean_length(
+    context: StepContext,
+    counts: Annotated[Array[int], "[prompt: str]"],
+) -> float:
+    """Average the word counts across prompts."""
+    values = list(counts.values())
+    return sum(values) / len(values)
+
+
+@workflow(name="word_count.experiment")
+async def experiment(
+    context: WorkflowContext,
+    prompts: Annotated[ArrayHandle[str], "[prompt: str]"],
+) -> Annotated[ArrayHandle[float], "[]"]:
+    """Measure the length of each prompt, then average the lengths."""
+    counts = context.run_step("count_words", count_words, {"prompt": prompts}, map_over=["prompt"])
+    return context.run_step("mean_length", mean_length, {"counts": counts})
+```
+
+In this code:
+
+* `count_words` takes one prompt and returns one number. `mean_length` takes a whole array of
+  counts, indexed by the `prompt` dimension, and returns one number.
+* `run_step` schedules a step and returns a *handle* to its future result without waiting for
+  it. Passing `counts` to the second step makes it depend on the first.
+* `map_over=["prompt"]` calls `count_words` once per prompt and stacks the results into an array
+  with the same `prompt` dimension. The second `run_step` has no `map_over`, so `mean_length`
+  runs once on the whole array.
+* A plain `str` or `int` annotation means a single value. `Annotated[..., "[prompt: str]"]` also
+  names the array's dimensions, which a Python type can't express.
+* Each docstring appears on its step's or workflow's card in the viewer.
+
+Then register the module in `pyproject.toml`, so that fxtr can find the experiment by name when
+it resumes a job or shows it in the viewer:
+
+```toml pyproject.toml
+[tool.fxtr]
+modules = ["my_project.word_count"]
+```
+
+## Launch it
+
+Create a launcher at the project root. It builds the input dataset and runs the workflow as a
+job:
+
+```python launch_word_count.py
+import anyio
+
+from fxtr.entity_defns.array import Array
+from fxtr.project.running import open_local_client, run_job
+from my_project.word_count import experiment
+
+
+async def main() -> None:
+    prompts = Array.from_items(
+        [
+            (("greeting",), "Hello there"),
+            (("question",), "Why is the sky blue?"),
+            (("request",), "Please summarize this article in three sentences."),
+        ],
+        ("[prompt: str]", str),
+    )
+    async with open_local_client(__file__) as client:
+        result = await run_job(client, experiment, {"prompts": prompts}, root="word-count-v1")
+        print(f"mean length: {result.item():.2f} words")
+
+
+if __name__ == "__main__":
+    anyio.run(main)
+```
+
+`Array.from_items` takes `(key, value)` pairs and a type: here, one `prompt` dimension with string
+keys, holding string values. `root` names the job's root workflow, and, as you'll see below,
+decides which earlier results the job can reuse.
+
+Commit, then launch, with `uv run fxtr view` running in another terminal. A launch records the
+commit it runs, so it refuses uncommitted changes:
+
+```bash
+git add . && git commit -m "Add the word count experiment"
+uv run python launch_word_count.py
+```
+
+```text
+job 3eb75a59-911e-44af-a148-411ac5dcd8d1: running
+watch it at http://127.0.0.1:8000/#job=3eb75a59-911e-44af-a148-411ac5dcd8d1
+job 3eb75a59-911e-44af-a148-411ac5dcd8d1: succeeded
+...
+mean length: 4.67 words
+```
+
+The launch opens the job in a new tab of the viewer: the `prompts` input feeding three
+`count_words` calls, one per prompt, feeding `mean_length`.
+
+## Rerun it
+
+Launch it again, unchanged. The job succeeds straight away, because every step finds its result
+in the cache. You can see the entries with `fxtr cache list`:
+
+```text
+completed  word-count-v1/count_words[prompt:"greeting"]  (word_count.count)
+completed  word-count-v1/count_words[prompt:"question"]  (word_count.count)
+completed  word-count-v1/count_words[prompt:"request"]  (word_count.count)
+completed  word-count-v1/mean_length  (word_count.mean)
+```
+
+Each entry is at a **cache address** built from the job's `root`, the step's name in the
+workflow, and, for a mapped step, the key it was called with. A step reuses a cached result when
+its address holds a result computed from the same step and the same inputs.
+
+## Change an input
+
+Now edit the `question` prompt, commit, and launch again under the same `root`. The job stops:
+
+```text
+job 3fa3df92-2edb-4088-9e1f-a99d28b7ec77: stopped
+  reason: cache conflict at 'word-count-v1/count_words[prompt:"question"]': a different request owns the address; clear it to run this request there
+  cache conflicts at 1 address:
+    word-count-v1/count_words[prompt:"question"]  1 address  word_count.count
+  to list them:          fxtr cache list --conflicts-in 3fa3df92-2edb-4088-9e1f-a99d28b7ec77
+  to clear them:         fxtr cache clear --conflicts-in 3fa3df92-2edb-4088-9e1f-a99d28b7ec77, then fxtr resume 3fa3df92-2edb-4088-9e1f-a99d28b7ec77
+  to rerun overwriting:  fxtr resume 3fa3df92-2edb-4088-9e1f-a99d28b7ec77 --overwrite-cache-conflicts
+Traceback (most recent call last):
+  ...
+fxtr.project.client.JobNotFinishedError: Job 3fa3df92-2edb-4088-9e1f-a99d28b7ec77 is stopped
+```
+
+The address `word-count-v1/count_words[prompt:"question"]` already holds a result computed from
+the old prompt. fxtr won't reuse that result for the new prompt, and doesn't replace a completed
+result unless you ask, so this is a **cache conflict**: the step doesn't run, and the job stops
+once nothing else can. The unchanged prompts still reuse their results. `run_job` raises
+`JobNotFinishedError` for any job that doesn't succeed, so your launcher can tell.
+
+The simplest way forward is to clear exactly the conflicting entries and resume the job:
+
+```bash
+uv run fxtr cache clear --conflicts-in 3fa3df92-2edb-4088-9e1f-a99d28b7ec77
+uv run fxtr resume 3fa3df92-2edb-4088-9e1f-a99d28b7ec77
+```
+
+`count_words` runs again for the new prompt. If its new count changes the mean, the resume stops
+again, this time at `mean_length`, whose input only changed once `count_words` had rerun. Clear
+and resume once more and the job succeeds. Clearing affects later requests only: jobs that
+already finished keep the results they used.
+
+When you are changing data on purpose and don't need to look at each conflict first,
+`uv run fxtr resume JOB --overwrite-cache-conflicts` does the same in one go, rerunning every
+conflicting step and replacing its old result, downstream steps included. A third option is to
+launch under a new `root`, which leaves every earlier result intact.
+[Resolving a job's conflicts](concepts/managing-the-step-cache.mdx#resolving-a-jobs-conflicts)
+compares the three.
+
+<Warning>
+  Changing a step's **code** does not invalidate its cached results: the cache matches a step by
+  its name and inputs, not its implementation. After changing what a step computes, launch under
+  a new `root` or clear its entries. See
+  [Handling changes to step logic](concepts/managing-the-step-cache.mdx#handling-changes-to-step-logic).
+</Warning>
+
+## Working with a coding agent
+
+fxtr has two skills for coding agents, `fxtr` and `behaviors`, which send an agent to the pages
+of this documentation a task needs: writing steps and workflows, launching jobs, caching, calling
+models with behaviors, and building viewer renderers. So you can ask an agent for an experiment in
+plain language and review the result in the viewer. The skills carry a copy of the pages they use,
+so an agent reads them without going online.
+
+Install the fxtr plugin in Claude Code:
+
+```text
+/plugin marketplace add TransluceAI/claude-code-plugins
+/plugin install fxtr@transluce-plugins
+```
+
+The plugin has a version of its own, and Claude Code offers each new one as an update; it isn't
+tied to the fxtr your project uses. To see which documentation a copy of the skills carries, read
+the `provenance.json` beside each skill's `SKILL.md`: it names the fxtr and behaviors versions,
+the commit of the fxtr repository the copy was made from (and whether it had changes not yet
+committed), and a hash of the skill's files. The pages on this site are always the newest.
+
+## Next steps
+
+<CardGroup cols={3}>
+  <Card title="Workflows and steps" icon="sitemap" href="concepts/workflows-and-steps.mdx">
+    The rules workflows and steps follow, and why they are separate.
+  </Card>
+
+  <Card title="Arrays and parallel computations" icon="table-cells" href="concepts/arrays-and-parallel-computations.mdx">
+    Sweep over models, prompts, and samples, and reduce over any dimension.
+  </Card>
+
+  <Card title="Calling language models" icon="comments" href="../../behaviors/references/guides/language-models.mdx">
+    Use behaviors to hold conversations and judge outputs in your steps.
+  </Card>
+</CardGroup>

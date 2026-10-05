@@ -1,0 +1,513 @@
+---
+title: "Array queries"
+description: "Filter, reshape, aggregate, and join arrays with the query builder or SQL, in a workflow or in a step."
+---
+
+This page is the reference for querying arrays: filtering, reshaping, aggregating, and joining
+them, in a workflow or in a step. Write a query with Python methods such as `filter()` and
+`aggregate()`, called the query builder, or with SQL through `fxtr.sql(...)`.
+[Querying, filtering, and aggregating arrays](../concepts/arrays-and-parallel-computations.mdx#querying-filtering-and-aggregating-arrays)
+introduces both.
+
+Writing a query does not run it; `collect()` does. Over arrays (`Array`), `collect()` runs the
+query and returns the result. In a workflow, over handles (`ArrayHandle`), it adds the query to the
+workflow's graph as a query node instead.
+
+## An example
+
+This experiment removes the runs that ended in an error, then summarizes each model's remaining
+runs: how many scored at least `0.8`, and the mean score of those runs.
+
+```python src/my_project/evaluation.py
+from typing import Annotated, TypedDict
+
+import fxtr
+from fxtr.entity_defns.array import Array
+from fxtr.entity_defns.query import value
+from fxtr.experiment.handles import ArrayHandle
+from fxtr.experiment.steps import StepContext, step
+from fxtr.experiment.workflows import WorkflowContext, workflow
+
+
+class Run(TypedDict):
+    score: float
+    error: str | None
+
+
+class Summary(TypedDict):
+    passed: int
+    mean_score: float | None
+
+
+@step(name="evaluation.summarize")
+async def summarize(
+    context: StepContext, runs: Annotated[Array[Run], "[run: int]"]
+) -> Summary:
+    """Count a model's passing runs and average their scores."""
+    stats = await fxtr.sql(
+        """
+        SELECT {passed: count(*), mean_score: avg(value.score)} AS value
+        FROM runs WHERE value.score >= 0.8
+        """,
+        tables={"runs": runs},
+        output_type=Summary,
+    ).collect()
+    return stats.item()
+
+
+@workflow(name="evaluation.evaluate")
+async def evaluate(
+    context: WorkflowContext, runs: Annotated[ArrayHandle[Run], "[model: str, run: int]"]
+) -> Annotated[ArrayHandle[Summary], "[model: str]"]:
+    """Summarize each model's runs that finished without an error."""
+    finished = runs.filter(value().field("error").is_null()).collect()
+    return context.run_step("summarize", summarize, {"runs": finished}, map_over=["model"])
+```
+
+Launch it with a `[model: str, run: int]` array of runs as its input (see
+[Launch from Python](../guides/running-and-viewing-jobs.mdx#launch-from-python)). The pieces:
+
+* **In the workflow**, `runs.filter(...)` builds a query over the handle `runs`;
+  `value().field("error")` reads each run's `error` field (see [Build a query](#build-a-query)).
+  `collect()`, which is not awaited, adds the query to the workflow's graph as one query node and
+  returns the node's handle, `finished`. The rows never reach the workflow body: the runner
+  computes the node, and `run_step` receives its handle.
+* **In the step**, `runs` arrives as an `Array`, so `fxtr.sql(...)` builds a query over it; in
+  SQL, `value.score` is each row's `score` field (see [Write SQL](#write-sql)).
+  `await ... .collect()` runs the query in the step's process and returns an `Array`. The result
+  is one value with no dimensions, which `item()` reads as a `Summary`.
+* **Mapping** over `model` calls `summarize` once for each model that has a row in `finished`. A
+  model whose runs all ended in an error has no rows there, so the result has no row for it (see
+  [Mapping logic over arrays](../concepts/arrays-and-parallel-computations.mdx#mapping-logic-over-arrays)).
+
+In the viewer, a query appears inside the argument of the step that reads it: `summarize`'s
+`runs` argument reads `query(runs)`.
+
+## Write SQL
+
+`fxtr.sql(...)` builds a query from one read-only DuckDB `SELECT`, so you write DuckDB's dialect of
+SQL, including CTEs, joins, window functions, and list functions. Like a builder query, it runs or
+is recorded when you call `collect()`.
+
+The examples here and in [Build a query](#build-a-query) use two arrays: `runs`, which holds each
+model's scored runs, and `models`, which holds each model's owner. The comment under each example
+shows what `collect()` returns: the result's type, then its rows as `(dimension keys): value`,
+with `...` for rows or fields left out. The same queries over handles holding these rows give the
+same results once collected.
+
+```python
+from typing import TypedDict
+
+from fxtr.entity_defns.array import Array
+
+
+class Run(TypedDict):
+    score: float
+    error: str | None
+
+
+class Model(TypedDict):
+    owner: str
+
+
+runs = Array.from_records(
+    [
+        {"model": "a", "run": 1, "score": 0.9, "error": None},
+        {"model": "a", "run": 2, "score": 0.4, "error": "timeout"},
+        {"model": "b", "run": 1, "score": 0.7, "error": None},
+        {"model": "b", "run": 2, "score": 0.95, "error": None},
+    ],
+    ("[model: str, run: int]", Run),
+)
+models = Array.from_records(
+    [{"model": "a", "owner": "alice"}, {"model": "b", "owner": "bob"}],
+    ("[model: str]", Model),
+)
+```
+
+In SQL, each table has two columns: `dims`, a struct of the row's dimension keys, and `value`, the
+row's value. So `runs.dims.model` is a run's model, and `runs.value.score` is its score.
+
+Find the best run for each model. `$per_model` is a parameter, bound to its value rather than
+pasted into the SQL:
+
+```python
+import fxtr
+
+best = fxtr.sql(
+    """
+    SELECT dims, value FROM runs
+    QUALIFY row_number() OVER (PARTITION BY dims.model ORDER BY value.score DESC, dims.run)
+        <= $per_model
+    """,
+    tables={"runs": runs},
+    parameters={"per_model": 1},
+)
+# [model: str, run: int]: Run
+#   ("a", 1): {score: 0.9, error: None}   ("b", 2): {score: 0.95, error: None}
+```
+
+Report each model's number of runs, owner, and mean score, joining the two tables:
+
+```python
+from fxtr.entity_defns.schema import optional, struct_of
+
+report = fxtr.sql(
+    """
+    SELECT {model: runs.dims.model} AS dims,
+           {runs: count(*), owner: any_value(models.value.owner),
+            mean_score: avg(runs.value.score)} AS value
+    FROM runs JOIN models ON runs.dims.model = models.dims.model
+    GROUP BY runs.dims.model
+    """,
+    tables={"runs": runs, "models": models},
+    output_type=("[model: str]", struct_of(runs=int, owner=str, mean_score=optional(float))),
+)
+# [model: str]: {runs: int, owner: str, mean_score: float | None}
+#   ("a",): {runs: 2, owner: "alice", mean_score: 0.65}   ("b",): {runs: 2, owner: "bob", ...}
+```
+
+Total the scores of all runs:
+
+```python
+total = fxtr.sql(
+    "SELECT coalesce(sum(value.score), 0.0) AS value FROM runs",
+    tables={"runs": runs},
+    output_type=float,
+)
+# []: float
+#   (): 2.95
+```
+
+SQL's `sum` of no rows is null, while the builder's `sum()` gives `0`. `coalesce(..., 0.0)` keeps
+`total` a valid `float` after a filter that removes every row. To keep the null instead, declare
+`optional(float)`.
+
+### Shape the result
+
+Return a `dims` column holding the result's dimension keys and a `value` column holding its
+values. A result with no dimensions, such as `total`, needs only `value`. Dimension keys must be
+non-null `int` or `str` values, unique for each row; to return repeated rows, add a
+`row_number()` dimension. The result is always in dimension-key order; `ORDER BY` matters only
+inside a window function and for choosing which rows a `LIMIT` keeps.
+
+**With one table, the result's type defaults to that table's type.** That suits SQL that only
+chooses rows, such as `best`. Set `output_type` when the SQL changes the dimensions or the value's
+schema, as `total` does, and whenever it reads more than one table, as `report` does. Without it,
+the query fails when it runs, with an error saying the columns do not match.
+
+An integer column widens to a declared `float`: `SELECT 5` declared `float` gives `5.0`. Any other
+mismatch between a column and its declared type is an error, so cast in SQL, as in
+`NULL::VARCHAR`.
+
+### Mix SQL with the builder
+
+A table can be a builder query, such as `runs.filter(...)`, and an SQL result has the builder's
+methods. The tables must be all arrays and `ArrayQuery`s, which gives an `ArrayQuery`, or all
+handles and `ArrayHandleQuery`s from the same run of a workflow body, which gives an
+`ArrayHandleQuery`. In a workflow where `runs` is a handle, this finds each model's best finished
+run and records it as one query node:
+
+```python
+from fxtr.entity_defns.query import value
+
+best_finished = fxtr.sql(
+    """
+    SELECT dims, value FROM finished
+    QUALIFY row_number() OVER (PARTITION BY dims.model ORDER BY value.score DESC, dims.run) = 1
+    """,
+    tables={"finished": runs.filter(value().field("error").is_null())},
+).collect()
+```
+
+### What SQL can read
+
+SQL reads only the tables in `tables` and its own `WITH` queries, named without a schema. Multiple
+statements, writes, file or network access, extensions, and table functions other than `unnest`,
+`range`, and `generate_series` are rejected when the query is built.
+
+In SQL, an entity ID is its content-derived ID as bytes. SQL can compare, copy, and return
+entity IDs, and can build one from bytes. Storing the result fails if it references an entity
+that is missing from storage. In a workflow, the result is stored when it is passed to a step or
+a child workflow, or returned by the workflow, and that failure fails the attempt (the current run
+of the workflow body).
+
+A list is one value, so a step can't be mapped over its elements. SQL can turn the elements into
+a dimension with `unnest`, and fold a dimension back into a list with `list(...)`: see
+[Turning lists into dimensions](../concepts/arrays-and-parallel-computations.mdx#turning-lists-into-dimensions).
+The query builder has no `unnest`, so this needs SQL.
+
+## Build a query
+
+The examples use `runs` and `models` from [Write SQL](#write-sql); `model` and `run` are
+dimensions of `runs`, not fields of its values. The expression helpers all come from
+`fxtr.entity_defns.query`: `dim`, `value`, `literal`, `when`, `asc`, `desc`, and `count`. The
+first example below imports the ones the examples use.
+
+Use `dim("model")` to read a dimension, `value()` to read the whole row value, and
+`value().field("score")` to read a field of a struct value. Chain `field` for a nested struct, as
+in `value().field("metrics").field("score")`; a field name is used as written, so
+`field("a.b")` reads a field named `a.b`. A dimension and a field can have the same name, since
+`dim` and `value().field` name which one they read.
+
+### Filter rows
+
+`filter(predicate)` keeps the rows where the predicate is true:
+
+```python
+from fxtr.entity_defns.query import count, desc, dim, value, when
+
+failed = runs.filter(value().field("error").is_not_null() & (value().field("score") < 0.5))
+# [model: str, run: int]: Run
+#   ("a", 2): {score: 0.4, error: "timeout"}
+```
+
+**Write `&`, `|`, `~`, `is_in([...])`, and `is_null()`, not `and`, `or`, `not`, `in`, and
+`is None`.** Python's `&` and `|` bind more tightly than comparisons, so put each comparison in
+parentheses. `and`, `or`, `not`, and chained comparisons such as `a == b == 2` raise a `TypeError`
+that names the operators to use. A bool-typed expression is a predicate by itself: for an array with
+a bool field `passed`, write `array.filter(value().field("passed"))`. Nulls follow SQL's rule; see
+[Where queries differ from Python](#where-queries-differ-from-python).
+
+### Reshape values
+
+```python
+scores = runs.select(value().field("score"))
+# [model: str, run: int]: float
+#   ("a", 1): 0.9   ("a", 2): 0.4   ("b", 1): 0.7   ("b", 2): 0.95
+
+score_rows = runs.select({"score": value().field("score")})
+# [model: str, run: int]: {score: float}
+#   ("a", 1): {score: 0.9}   ...
+
+model_a = runs.sel({"model": "a"})
+# [run: int]: Run
+#   (1,): {score: 0.9, error: None}   (2,): {score: 0.4, error: "timeout"}
+```
+
+One expression replaces each row's value, and a mapping builds a struct from several; neither
+changes the dimensions. After a `select`, `value()` refers to the new value. `runs.field("score")`
+is shorthand for the first form. `sel` keeps the rows at the given dimension values and removes
+those dimensions; despite the similar name, it is unrelated to `select`.
+`rename({"run": "attempt"})` renames dimensions.
+
+### Aggregate rows
+
+```python
+per_model = runs.aggregate(
+    {"runs": count(), "mean_score": value().field("score").mean()},
+    group_by={"model": dim("model")},
+)
+# [model: str]: {runs: int, mean_score: float | None}
+#   ("a",): {runs: 2, mean_score: 0.65}   ("b",): {runs: 2, mean_score: 0.825}
+```
+
+The `group_by` names become the result's dimensions, in the order given, and group keys must be
+non-null `int` or `str` values. Without `group_by`, the result has no dimensions. Bare `count()`
+counts rows, and `expression.count()` counts non-null values. The other aggregations are methods
+on expressions: `sum()`, `mean()`, `min()`, `max()`, `n_unique()`, `std()` and `var()` (sample
+statistics), `quantile(q)` (linear interpolation), and `median()`.
+
+Every aggregation except `n_unique()` skips nulls; `n_unique()` counts null as one value. This
+table shows what each gives when there are no rows, and when every value is null:
+
+| Aggregation                                           | No rows                   | Only nulls                     |
+| ----------------------------------------------------- | ------------------------- | ------------------------------ |
+| `count()`                                             | `0`                       | the number of rows             |
+| `expression.count()`, `sum()`                         | `0`                       | `0`                            |
+| `n_unique()`                                          | `0`                       | `1` (null counts as one value) |
+| `mean()`, `min()`, `max()`, `median()`, `quantile(q)` | null                      | null                           |
+| `std()`, `var()`                                      | null (also for one value) | null                           |
+
+### Keep the top rows
+
+```python
+best_two = runs.limit(2, order_by=desc(value().field("score")))
+# [model: str, run: int]: Run
+#   ("a", 1): {score: 0.9, error: None}   ("b", 2): {score: 0.95, error: None}
+```
+
+`limit(n, order_by=...)` keeps the first `n` rows under one or more sort keys. Each key is an
+expression, sorted ascending, or `asc(...)` or `desc(...)`. When rows tie on the sort keys, their
+dimension keys break the tie, so the result is the same every time. With `ties="all"`, `limit` also
+keeps every row that ties with the last row kept, so it can return more than `n` rows; it needs
+`order_by`. The sort only chooses rows: the result, like every array, is in dimension-key order,
+as above.
+
+### Join arrays
+
+`join` keeps the pairs of rows whose columns are equal for every pair of columns in `on` (an inner
+join). The result's value holds the two rows' values under `left` and `right`, which `left_name=`
+and `right_name=` rename. **The result's dimensions are the left input's, followed by the right
+input's that are not join keys.** A right dimension whose name the left input already uses is
+renamed with the `right_name` value and an underscore as a prefix, as in `right_run` (or `b_run`
+with `right_name="b"`):
+
+```python
+owned = runs.join(models, on=[(dim("model"), dim("model"))])
+# [model: str, run: int]: {left: Run, right: Model}
+#   ("a", 1): {left: {score: 0.9, error: None}, right: {owner: "alice"}}   ...
+
+a_runs, b_runs = runs.sel({"model": "a"}), runs.sel({"model": "b"})
+paired = a_runs.join(b_runs, on=[(dim("run"), dim("run"))], left_name="a", right_name="b")
+# [run: int]: {a: Run, b: Run}
+#   (1,): {a: {score: 0.9, ...}, b: {score: 0.7, ...}}
+#   (2,): {a: {score: 0.4, ...}, b: {score: 0.95, ...}}
+
+same_error = a_runs.join(b_runs, on=[(value().field("error"), value().field("error"))])
+# [run: int, right_run: int]: {left: Run, right: Run}, with no rows: run 1's error is null on
+# both sides, and null never equals null
+```
+
+The dimensions decide how a step maps over the result: `paired` has one row per run, so a step
+comparing the two models maps over `run`.
+
+`context.combine` is the other way to put a workflow's handles side by side. It lines them up
+along their shared dimensions, broadcasting where one lacks a dimension, into one struct per key,
+with no join condition. Use `join` to match an explicit pair of columns, such as one array's
+dimension against another's field.
+
+### Build expressions
+
+Expressions support arithmetic, `cast(t)` (to `int`, `float`, `str`, `bool`, or `bytes`),
+`fill_null(x)`, `is_in([...])`, `between(low, high)` (inclusive), and
+`when(...).then(...).otherwise(...)`:
+
+```python
+score = value().field("score")
+computed = runs.select(
+    {
+        "percent": score * 100,
+        "error": value().field("error").fill_null("none"),
+        "chosen_model": dim("model").is_in(["a", "c"]),
+        "band": when(score.between(0.8, 1.0)).then("high").otherwise("other"),
+    }
+)
+# [model: str, run: int]: {percent: float, error: str, chosen_model: bool, band: str}
+#   ("a", 1): {percent: 90.0, error: "none", chosen_model: True, band: "high"}
+#   ("a", 2): {percent: 40.0, error: "timeout", chosen_model: True, band: "other"}   ...
+```
+
+The same expressions work in `select`, `filter`, aggregations, `group_by`, and `order_by`. Use
+`literal(x)` for a standalone constant, and `literal(None, optional(int))` for a typed null, with
+`optional` from `fxtr.entity_defns.schema`. A query can compare, copy, join on, and write entity
+IDs, but cannot look inside them: a query never loads an entity. For anything else, such as window
+functions, list or string functions, or recursive CTEs, use [SQL](#write-sql).
+
+## Run a query now, or record it in a workflow
+
+The same methods work on an `Array` and on an `ArrayHandle`. Called on either, `filter`,
+`select`, `field`, `sel`, `rename`, `limit`, `aggregate`, and `join` start a query:
+`array.filter(p)` is short for `array.query().filter(p)`. Called on a query, they extend it.
+What `collect()` does depends on what the query reads:
+
+* **Over arrays** (an `ArrayQuery`, in a step, a notebook, or a launcher), `await query.collect()`
+  runs the query immediately and returns an `Array`. The query keeps no result, so each
+  `collect()` runs it again; to use a result twice, keep the returned array.
+* **Over handles** (an `ArrayHandleQuery`, in a workflow), `query.collect()` runs nothing and is
+  not awaited. It adds the query to the workflow's graph as a query node, which the runner
+  computes as soon as its inputs have values, and returns the node's handle. Pass the handle to a
+  step, query it again, or wait for its rows with `await handle.observe()` or
+  `await handle.item()`. Collecting the same query twice adds one node, and a query that is never
+  collected adds none. To reuse part of a query, collect that part and build on the handle.
+
+A query has no `item()`, so collect it first and read values from the result. Over arrays,
+write `(await query.collect()).item()`. Over handles, write `await query.collect().item()`:
+`collect()` returns the handle without waiting, and `item()` waits for the value.
+**`item()` needs an array with no dimensions.** One row is not enough, so
+`(await runs.limit(1).collect()).item()` raises `ArrayTypeError`, from
+`fxtr.entity_defns.array`. Read a result with dimensions by key, as in `result[("a", 1)]`, or row
+by row with `result.items()`.
+
+**Collect a query before passing it to `run_step`**, which takes handles, as `evaluate` does in
+[the example](#an-example).
+
+**One query reads either arrays or handles, not both.** Mixing them raises a `QueryError`. To
+query an array together with handles, add it to the workflow with `context.add_source_array(...)`;
+to query a handle's rows as an array, `observe()` it.
+
+## Query in the workflow or in a step
+
+When a workflow needs to filter, reshape, aggregate, or join results before the next step, the
+work can go in the workflow body, as a query, or in a step, which receives the arrays and may
+query them itself, as `summarize` does and as reduction steps do. What differs:
+
+* A query in the workflow body needs no step function and adds nothing to the step cache. The
+  runner computes it again on a resumed attempt and in a later job.
+* A step's result is cached, and a step can do what a query cannot: call a model or another
+  service, load an entity's contents, or run arbitrary Python.
+
+So use a step when the work calls a model or another service, needs an entity's contents or
+arbitrary Python, is slow enough that its result should be cached, or must give one answer
+however often it runs, such as a random draw or a timestamp (see
+[Keep query nodes stable](#keep-query-nodes-stable)). For a transformation a query can express,
+either works.
+
+For example, `summarize` in [the example](#an-example) can also be one query over `finished`.
+`summarize` runs once per model and always returns one row, so a model whose finished runs all
+score under `0.8` gets `passed: 0`. A query that filtered on the score first would have no row for
+that model, so this query makes the score conditional instead. In `evaluate`, it replaces the
+`run_step` call, and the workflow returns `summaries`:
+
+```python
+from fxtr.entity_defns.query import dim, literal, value, when
+from fxtr.entity_defns.schema import optional
+
+score = value().field("score")
+passing = when(score >= 0.8).then(score).otherwise(literal(None, optional(float)))
+summaries = finished.aggregate(
+    {"passed": passing.count(), "mean_score": passing.mean()}, group_by={"model": dim("model")}
+).collect()
+```
+
+## Where queries differ from Python
+
+Queries follow SQL's rules, as DuckDB implements them:
+
+* **A comparison with null is null, and `filter` drops rows whose predicate is null.** With
+  `error = value().field("error")`, `runs.filter(error != "timeout")` returns no rows: the three
+  runs without an error have a null `error`, and `null != "timeout"` is null.
+  `runs.filter(~(error == "timeout"))` returns no rows either. To keep those three runs, write
+  `runs.filter(error.is_null() | (error != "timeout"))`. Likewise, `is_in([2, None])` is null,
+  not false, for a value other than `2`.
+* **`&` and `|` evaluate both sides.** For a string field `s`, `(s != "") & (s.cast(int) > 10)`
+  still converts the empty strings, and fails on them. Guard the cast with an earlier `filter`, or
+  with `when(s != "").then(s.cast(int) > 10).otherwise(False)`.
+* **Integer arithmetic is SQL's.** `//` truncates toward zero, `%` takes the sign of the dividend,
+  and `//` between floats divides (`7.5 // 2.0` is `3.75`). `cast(int)` rounds half to even
+  (`2.5` becomes `2`) and reads `'1.7'` as `2`.
+* **Strings order by code point**, in comparisons, `min()` and `max()`, and `order_by` alike.
+* **Names are matched without regard to case**, so a query is rejected when it is built if two
+  dimensions, or two fields of one struct, differ only by case.
+* **A value an array cannot hold fails the query**: a failed `cast()`, a NaN or infinite result, a
+  null where the type is not optional, a repeated key, or a null dimension. Collecting an
+  `ArrayQuery` raises `QueryError`, from `fxtr.entity_defns.query`. In a workflow, the query node
+  fails, which fails the attempt as a failed step does; the workflow body cannot catch the error.
+
+## Keep query nodes stable
+
+**Put random draws and timestamps in steps, whose results are cached.** A query node is not
+cached, so the runner computes it again when an attempt resumes or retries, and in a later job.
+Computing it again gives the same answer, except for SQL that asks for varying values:
+`random()`, `gen_random_uuid()`, `now()`, and the other clock functions. A sum of floating-point
+values can also differ when the order of summation is not fixed, so put floating-point
+aggregations whose exact value matters in a step too.
+
+When a resumed job, or a later job, gets a different answer, it cannot reuse what the earlier
+run cached, and what happens depends on how the answer was used:
+
+* A step that receives the new answer is in cache conflict: the job stops with a cache conflict
+  at its address (see
+  [Resolving a job's conflicts](../concepts/managing-the-step-cache.mdx#resolving-a-jobs-conflicts)).
+* A workflow that chose which steps to run from the answer can build a different graph. The job
+  then fails with `DeterminismError`, or, when no cached step is asked for a different call,
+  finishes with results computed from the new answer.
+
+To compute a varying value once, run the same query in a step with `await ... .collect()`.
+
+## Check a query's type
+
+`query.expect_type(...)` checks a query's type while it is built, as `ArrayHandle.expect_type`
+does, so a wrong assumption about a query's shape fails where the query is written. For example,
+`runs.select(value().field("score")).expect_type(("[model: str]", float))` raises
+`ArrayTypeError`, because the result still has the `run` dimension.

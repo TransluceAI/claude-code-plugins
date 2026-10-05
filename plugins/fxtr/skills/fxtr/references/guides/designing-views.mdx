@@ -1,0 +1,321 @@
+---
+title: "Designing views"
+description: "How a renderer's views should look and behave in the viewer: surfaces, type, color, charts, links, controls, and how to check them."
+---
+
+A project's renderers draw inside the experiment viewer, beside the viewer's own cards, tables,
+and panes. A view has two parts. Its frame (headings, text, tables, controls, links) is the
+viewer's: the same dense type, the same controls, and links and selection that behave like the
+viewer's own, so the view does not look out of place. Its charts are figures set in that frame,
+with a visual language of their own: their colors mean what their legends and labels say. This
+guide is how the viewer looks and behaves, and how to build charts and controls that sit well in
+it with `fxtr-view` and `fxtr-view-kit`. The [renderer reference](../reference/renderers.mdx)
+covers registering renderers, loading data, and the kit's API.
+
+A project written with `fxtr new --example` has a complete small example in
+`views/src/overview.tsx`: a results overview with a chart that follows everything below.
+
+## Where a view appears
+
+| Surface          | Renderer                                     | Room                                                                                                    | Base type | Surface under it |
+| ---------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------- | --------- | ---------------- |
+| Results overview | `InvocationPanel` of the root workflow       | the page, up to 1400px wide, 12px side margins                                                          | 13px      | `--bg-alt`       |
+| A pane           | `EntityPanel`, or a step's `InvocationPanel` | resizable; can be 300px or less                                                                         | 12px      | `--bg-alt`       |
+| A card's preview | the node's default view                      | beside each card while no pane is open, about half the page wide, as tall as the card, scrolling inside | 12px      | `--bg-alt`       |
+| Hover card       | `EntityHoverPreview`                         | 360px wide, at most 300px tall, the full cid below it                                                   | 11px      | `--bg`           |
+| Inline link      | `EntityInlineLink`                           | one line inside a pill, cut off with an ellipsis                                                        | 11px      | the pill         |
+
+A project's own renderer becomes the default view of its node, so the same component may draw at
+full page width, in a narrow pane, and in a card's preview. Design for every width from about 320px
+to 1400px, and put the finding that matters most at the top left, where every surface shows it.
+
+The viewer draws the frame. Leave out what it already gives:
+
+* No padding, background, border, shadow, or font size on the view's root. The view inherits its
+  surface and its base size, which differ by surface.
+* The pane's head already names the entity or node. An `EntityPanel` starts with its kind
+  (`<Kind>Transcript</Kind>`); an invocation view starts with `InvocationHead`.
+* The top right corner of an entity's panel holds the viewer's view switcher and info button,
+  faint until hovered. Keep controls out of that corner.
+
+## The look
+
+### Type
+
+The viewer is dense: most text is 12px or less, and nothing is larger than 14px. Use the type
+tokens, never a pixel size of your own.
+
+| Token         | Size | For                                                                  |
+| ------------- | ---- | -------------------------------------------------------------------- |
+| `--text-2xs`  | 9px  | rarely; tiny tags                                                    |
+| `--text-xs`   | 10px | axis ticks, legends, section headings, notes beside a number         |
+| `--text-sm`   | 11px | table headers, captions, tooltips, controls, chips                   |
+| `--text-md`   | 12px | body text in panes, table cells                                      |
+| `--text-base` | 13px | body text of a results overview (inherited)                          |
+| `--text-lg`   | 14px | the one title of a panel (`layout.title`), headline numbers (`Stat`) |
+
+* Fonts are `--font-sans` (inherited) and `--font-mono`. Monospace is for identifiers: dimension
+  keys, IDs, argument names, kinds (`Kind` is monospace already). Everything else is sans. No
+  other family, and no serif or display face.
+* A headline number is a `Stat` (14px, weight 600), not a large numeral.
+* Section headings are `<h3 className={layout.subtitle}>`: small, spaced, dim, and the one
+  uppercase style in the viewer, set by its CSS. Write the heading's text in lower case. Never
+  write uppercase text in the source.
+* Labels, headers, and options are lower case ("model", "mean score"), not Title Case. Prose is
+  sentence case.
+* Numbers use tabular figures and sit right-aligned in columns (`layout.num`). Write them with the
+  kit's formatters: a true minus sign, grouped thousands, a fixed number of decimals per column,
+  and `—` for a missing value.
+
+### Color
+
+Every color is a design token, written `var(--token)` in CSS, in inline styles, and in SVG fills
+and strokes alike. Never write a literal color (`#fff`, `white`, `rgb(...)`, `hsl(...)`): the
+viewer has a light and a dark theme, the tokens switch with it, and a literal stays the same in
+both. Never set `color-scheme`, never redefine a token, and never paint a background of your own
+behind the view.
+
+For the frame, use the tokens the way the viewer does:
+
+| Tokens                                                           | What the viewer uses them for                                                                     |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `--fg`, `--fg-dim`, `--fg-faint`                                 | ink: text, then secondary text, then the faintest                                                 |
+| `--bg`, `--bg-alt`, `--muted-bg`                                 | surfaces: a box's fill, the page, a neutral track or empty cell                                   |
+| `--line-soft`, `--line`, `--line-strong`                         | hairlines, from faintest: row separators; rules, borders, grid lines; axis lines, control borders |
+| `--hover`, `--hover-strong`                                      | translucent washes over a hovered row or button, and a pressed one                                |
+| `--select-accent`, `--select-bg`, `--select-fg`, `--select-line` | blue: what a pane shows, and the selection                                                        |
+| `--picked-bg`, `--picked-fg`                                     | gray: a row picked in a table                                                                     |
+| `--danger`, `--danger-bg`                                        | red: failure                                                                                      |
+| `--mapped-*`, `--replica-*`                                      | warm and green: the kinds of a run's dimensions                                                   |
+| `--role-*-bg`                                                    | chat turns, by speaker (the kit's `MessageList` uses them)                                        |
+
+In a chart, any of these can carry data too: blue for one condition and red for another is fine
+when the legend says so. The chart colors are a default palette for data, checked to stay apart
+for color-blind readers and readable in both themes:
+
+* **Categorical** (which series): `--chart-1` to `--chart-8` (blue, orange, aqua, ochre,
+  magenta, green, violet, red), through `seriesColor(i)`, assigned in order. One series is
+  `--chart-1`. Never cycle: past eight series, fold the rest into one "other" series
+  (`CHART_OTHER`, a gray), or split the chart into small multiples. A series keeps its color when
+  a filter hides others. In a scatter, a map, or small multiples, where any two colors can sit
+  side by side, the first three stay apart for every reader; past three, label the series
+  directly.
+* **Sequential** (how much): `sequentialFill(t)` for `t` from 0 (near nothing) to 1 (the most),
+  one blue from pale to deep. Text on it: `sequentialInk(t)`.
+* **Diverging** (which side of a baseline): `divergingFill(t)` for `t` from -1 (red) to 1
+  (blue), through a gray midpoint at 0. Text on it: `divergingInk(t)`.
+* Color does a job another channel is not already doing: bars of one series are all one color,
+  not colored by their length.
+* Identity never rests on color alone: label series directly, or add a `Legend`.
+
+Where marks need separating, leave real space between them, not a stroke or border painted
+`var(--bg)`: views sit on `--bg-alt`, so a `--bg` halo shows as a pale seam.
+
+### Lines, boxes, and motion
+
+* Group with space and a `layout.subtitle` heading, not with cards. Never put a card inside a card.
+  Where a box is needed (a pick's detail), use the kit's `DetailBox`: a 1px `--line` border, 4px
+  corners, no shadow.
+* Corners: a pill's are fully round, a control's or a box's are 4px, a bar's or a cell's 2px.
+* Shadows only on what floats (the tooltip). Rules and borders are 1px.
+* No animation or transition of your own; the viewer animates only what is running.
+
+## Charts
+
+### Choose the form
+
+First decide what someone most needs to see from the experiment. It may not be the final step's
+output; it may come from several steps. Then pick the chart that shows it. A good graph is worth a
+thousand words, and a standard bar chart is often not the best one. Make the graphs as clear and
+as information-dense as they can be, and get the details right.
+
+* **Show distributions, not just averages**, when there is room: a dot strip, a histogram, or a
+  box beside the mean. Density trades against clarity: don't make a graph too busy to read. Add
+  interactivity to show more detail, not for its own sake.
+* **Consistent axes.** Charts of the same kind side by side (two accuracy charts on different
+  slices) share their ranges and their category order and spacing. Mismatched axes on charts that
+  look alike mislead.
+* **One value axis per chart.** Two measures of different scales are two charts.
+* **Two or more categorical variables:**
+
+  * a *table* of X × Y, the baseline for two;
+  * *small multiples*: one table or chart per value of a third variable Z, for a small Z (about
+    six or fewer), when the interaction with Z should be visible at a glance;
+  * *a chart in each cell*: an X × Y table whose cells hold a small chart over Z (a bar, a dot
+    strip, a sparkline), for a scalar output and a larger Z;
+  * *coordinate strips*: one strip per variable, each showing the output along that variable
+    with the others fixed at a current point; pressing a cell moves the current point along that
+    variable (shown as a breadcrumb), and can open the tuple's detail. For three or more variables
+    with many values, when the reader is exploring.
+
+  Use small multiples or a chart in each cell to present an interaction you found, and coordinate
+  strips to let the reader explore.
+* A view can hold as many charts as the analysis needs, each under its own section heading.
+
+### Draw it
+
+Charts are SVG written by hand (or HTML, for tables and heatmaps), drawn with the kit's parts. A
+chart library is fine where it saves work (visx's scales and shapes, say), as long as what it
+draws follows this guide: its own colors, fonts, tooltips, and fixed sizes do not.
+
+* **Width.** Draw inside `ChartFrame`, which measures its width and calls its children with it;
+  compute pixel coordinates from that width. Never scale a fixed drawing with `viewBox` and
+  `width: 100%`: the text in it would shrink in a narrow pane and grow on a wide page. Heights
+  are fixed per row or per chart. Wide tables scroll sideways in their own `overflow-x: auto`
+  wrapper; small multiples wrap (`grid-template-columns: repeat(auto-fill, minmax(240px, 1fr))`).
+* **Axes and grid.** A `<g className={layout.axis}>` holds an axis line, its ticks, and their
+  labels (10px, dim, tabular); `<g className={layout.grid}>` holds grid lines, drawn before the
+  marks. A few round ticks, starting at zero for bars. Put units in the section's note line or a
+  short axis title in lower case, not on every tick.
+* **Marks.** Thin and plain: bars and cells with 2px corners, starting at their baseline; dots of
+  3 to 4px radius; lines 1.5 to 2px. Direct labels (`layout.chartLabel`) on the few values that
+  matter, not a number on every mark.
+* **Legends.** A `Legend` for two or more series, placed above the chart; none for one series
+  (its heading names it). A `ScaleLegend` for a sequential or diverging fill.
+* **Text in SVG** inherits the viewer's sans; size and color it with the `layout` classes or the
+  type tokens. Align with SVG attributes (`textAnchor`, `dominantBaseline`).
+
+## Interaction
+
+* **Links.** Anything that stands for an entity leads to it. In text and tables, write an
+  `EntityLink` (a chip the viewer draws: pressing opens the entity, hovering shows its preview).
+  The viewer labels the chip with the entity's type and a short ID, so put a readable name
+  beside it (a row's guest, a model's name), as the viewer's own tables put a key beside a value.
+  A chart's mark cannot be a chip, so a mark standing for an entity takes
+  `const links = useEntityLinks()` from `fxtr-view`: pressing it calls `links.open(id)`, which
+  does what pressing the entity's link does, and it carries `data-open={links.isOpen(id)}`, which
+  `layout.mark` (SVG) and `layout.cellMark` (HTML) draw as an ink ring while a pane shows the
+  entity, as the viewer lights the entity's link. A mark standing for many entities (the bar of a
+  mean) opens a `DetailBox` under the chart listing them as links.
+* **Pressable marks.** Give every mark a reader can press `pressable(onPress, label)`, which makes
+  it focusable and pressable with Enter and Space and names it for screen readers ("Ada: 12
+  characters"), and a `layout.mark` or `layout.cellMark` class for its hover, focus, and state
+  rings.
+* **Hover.** Show a tooltip through `ChartFrame`'s `tooltip` prop, set on pointer enter and on
+  focus, cleared on leave and blur: the mark's name in bold, its value, and a line of context.
+  Nothing in a tooltip can be pressed, so links go in the chart or under it. Never use SVG
+  `<title>` or the `title` attribute for this.
+* **Picks within the view.** A reader's pick that stays inside the view (a series focused, a
+  point whose detail shows under the chart) is drawn with `data-picked="true"` (the same ink
+  ring), the rest `layout.faded`; its detail goes in a `DetailBox`.
+* **Controls.** `Segmented` for two to five options, `Select` for more, labeled in lower case,
+  on the section heading's line at its right (as in the example below) or in one row above the
+  charts they control. No unstyled native controls.
+* **Kept state.** What a reader chose (a tab, an order, a pick, a filter) lives in the panel's
+  storage, through `useStoredState`, so it survives the view remounting
+  ([Panel state](../reference/renderers.mdx#panel-state)). Hover and focus stay in `useState`.
+* **Loading and states.** `unwrap` what the view cannot draw without; load many entities with
+  `LoadEach` and say how many are still loading; show a run in progress or failed with
+  `InvocationOutcome`; show an empty result with a `layout.empty` line ("no greetings yet").
+  Handle every count of invocations a panel is given.
+
+## Writing
+
+* A view opens with its kind (`Kind` or `InvocationHead`), then the findings. No hero, no
+  headline question, no introductory essay, no numbered figures.
+* Each chart has a lower-case section heading and at most one dim line under it saying what is
+  plotted, in what units, and how to read it (`layout.muted`). Join inline facts with " · ".
+* Names come from the data (the model's name, the step's name), not from marketing copy.
+* No emoji, and no Unicode symbols as icons (✕, ◆, ↗): draw icons in SVG with `currentColor`.
+
+## Example: a heatmap
+
+A report's scores as a model × scenario table, each cell filled by its score and opening the
+transcript behind it, with the reader's choice of metric kept in storage:
+
+```tsx views/src/scores.tsx
+import { unwrap, useEntity, useEntityLinks, type EntityData, type EntityID, type EntityPanelProps } from "fxtr-view";
+import { Kind, MISSING, ScaleLegend, Select, formatNumber, layout, pressable, sequentialFill, sequentialInk, useStoredState } from "fxtr-view-kit";
+import styles from "./scores.module.css";
+
+interface ScoreData extends EntityData {
+  readonly $type: "my_project.Score";
+  readonly model: string;
+  readonly scenario: string;
+  readonly accuracy: number;
+  readonly refusal: number;
+  readonly transcript: EntityID;
+}
+
+interface ReportData extends EntityData {
+  readonly $type: "my_project.Report";
+  readonly scores: readonly ScoreData[];
+}
+
+type Metric = "accuracy" | "refusal";
+
+export function ReportPanel({ id, storage }: EntityPanelProps) {
+  const report = unwrap(useEntity(id as EntityID<ReportData>));
+  const links = useEntityLinks();
+  const [metric, setMetric] = useStoredState<Metric>(storage, "metric", "accuracy", (value): value is Metric =>
+    value === "accuracy" || value === "refusal",
+  );
+  const models = [...new Set(report.scores.map((s) => s.model))];
+  const scenarios = [...new Set(report.scores.map((s) => s.scenario))];
+  const cell = (model: string, scenario: string) => report.scores.find((s) => s.model === model && s.scenario === scenario);
+  return (
+    <div className={layout.panel}>
+      <div className={layout.kindLine}><Kind>Report</Kind></div>
+      <div className={styles.head}>
+        <h3 className={layout.subtitle}>scores by model and scenario</h3>
+        <Select label="metric" value={metric} onChange={setMetric}
+          options={[{ value: "accuracy", label: "accuracy" }, { value: "refusal", label: "refusal rate" }]} />
+      </div>
+      <p className={layout.muted}>Share of calls, 0 to 1. Press a cell to open its transcript.</p>
+      <ScaleLegend scale="sequential" low="0" high="1" />
+      <div className={styles.scroll}>
+        <table className={layout.table}>
+          <thead>
+            <tr><th>model</th>{scenarios.map((s) => <th key={s} className={layout.num}>{s}</th>)}</tr>
+          </thead>
+          <tbody>
+            {models.map((model) => (
+              <tr key={model}>
+                <td className={styles.key}>{model}</td>
+                {scenarios.map((scenario) => {
+                  const score = cell(model, scenario);
+                  if (!score) return <td key={scenario} className={layout.num}>{MISSING}</td>;
+                  const value = score[metric];
+                  return (
+                    <td key={scenario} className={`${layout.num} ${layout.cellMark}`}
+                      style={{ background: sequentialFill(value), color: sequentialInk(value) }}
+                      data-open={links.isOpen(score.transcript)}
+                      {...pressable(() => links.open(score.transcript), `${model} on ${scenario}: ${formatNumber(value, 2)}`)}>
+                      {formatNumber(value, 2)}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+```
+
+```css views/src/scores.module.css
+.head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; }
+.head > h3 { margin: 0; }
+.scroll { overflow-x: auto; }
+.key { font-family: var(--font-mono); font-size: var(--text-sm); color: var(--fg-dim); }
+```
+
+## Check it
+
+Save, let the running `uv run fxtr view` rebuild the bundle (the open viewer updates in place; see
+[Building and reloading](../reference/renderers.mdx#building-and-reloading)), and look at the view:
+
+* in both themes (the theme toggle at the foot of the viewer's left rail);
+* as the results overview at full width, in a pane dragged narrow, and in a card's preview (close
+  every pane to see the previews);
+* with the keyboard: Tab reaches every mark and control, Enter presses, the tooltip follows focus;
+* pressing a mark opens its entity in a pane, and the mark then wears the ink ring.
+
+And search the package for what the viewer never uses; each of these should find nothing:
+
+```bash
+grep -rnE '#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(' views/src
+grep -rnE 'font-family: *[^v ]|font-size: *[0-9]|color-scheme|!important|<title>' views/src
+```

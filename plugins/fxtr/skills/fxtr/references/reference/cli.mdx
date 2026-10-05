@@ -1,0 +1,124 @@
+---
+title: "CLI reference"
+description: "The fxtr command-line interface."
+---
+
+Run `fxtr` from inside a project with `uv run fxtr ...`. Every command works on the project
+containing the working directory; `--project PATH` names another. `uv run fxtr COMMAND --help`
+describes each command's options.
+
+| Global option     | Effect                              |
+| ----------------- | ----------------------------------- |
+| `--project PATH`  | A path inside the project to use.   |
+| `-q`, `--quiet`   | Show only warnings from the runner. |
+| `-v`, `--verbose` | Show the runner's debug output.     |
+
+## Projects
+
+<ResponseField name="fxtr new DIRECTORY">
+  Write an empty uv project that depends on this fxtr or a later one, with a Python package and an
+  empty renderer bundle. Add `--example` to include a runnable greeting experiment, its launcher,
+  greeting renderers, and a results overview. It runs `git init` (unless the directory is
+  already in a git or jj checkout) and prints the setup commands, starting with `uv sync`.
+  `--name` picks the project's name.
+</ResponseField>
+
+<ResponseField name="fxtr init --database-url URL">
+  Write `fxtr.local.toml`, which says where this machine reaches the project's database, and
+  create the project's tables. The URL is a SQLAlchemy `postgresql+asyncpg://...` URL. `--schema`
+  picks the database schema (by default `fxtr_` followed by the project's name), and `--force`
+  replaces an existing file. The `FXTR_DATABASE_URL` environment variable overrides the file's
+  URL.
+</ResponseField>
+
+## Jobs
+
+<ResponseField name="fxtr run WORKFLOW">
+  Run a workflow, by its registered name, as a job in this process until it stops. `--input
+    NAME=VALUE` passes an input as a JSON scalar, or as `@ARRAY` for a snapshot of a project array.
+  `--root` sets the root pathname. `--allow-staged` includes staged changes in the pinned code,
+  `--no-verify` skips checking the environment against `uv.lock`, and
+  `--overwrite-cache-conflicts` reruns steps in cache conflict and replaces the old results.
+  When the project's viewer is running, the job opens in a new tab of it; `--no-open` only
+  prints the link.
+</ResponseField>
+
+<ResponseField name="fxtr resume JOB">
+  Run a stopped job's unfinished work in this process until it stops. It reuses the results the
+  job already has and retries failed steps. Takes `--allow-staged`, `--no-verify`,
+  `--overwrite-cache-conflicts`, and `--no-open` like `fxtr run`.
+</ResponseField>
+
+<ResponseField name="fxtr jobs list">
+  List every job, newest first.
+</ResponseField>
+
+<ResponseField name="fxtr jobs status JOB">
+  Show where a job is, and why it stopped. A job's cache conflicts are shown grouped into
+  patterns, with the commands that resolve them.
+</ResponseField>
+
+<ResponseField name="fxtr jobs cancel JOB">
+  Ask the process running a job to stop it.
+</ResponseField>
+
+<ResponseField name="fxtr jobs export JOB PATH">
+  Write a stopped or succeeded job's record to a file: its facts, and every entity they reach,
+  as a gzipped CAR file that another project can import.
+</ResponseField>
+
+<ResponseField name="fxtr jobs import PATH">
+  Add the job in a record file written by `fxtr jobs export` to this project, with everything it
+  reaches. The commits its results were produced at must exist in this repository, and the job
+  must not be in the project already unless `--update` is given, which brings a job the project
+  has up to date from a later record of it. The step cache is left alone unless `--adopt-cache`
+  is given, which makes the cache offer the job's results as `fxtr cache adopt` does; with it,
+  `--overwrite-cache-conflicts` replaces entries that hold a different request's result.
+</ResponseField>
+
+## Cache
+
+<ResponseField name="fxtr cache list [PATTERN]">
+  List the step cache's entries, oldest first, with each entry's state, address, and step.
+  `PATTERN` limits the list to the entries at or under an address, where a mapped key's value
+  can be `*` (`'root/count_words[prompt:*]'`). `--conflicts-in JOB` lists the entries a job is
+  in cache conflict with, `--step` one step's entries, and `--state` entries in one state.
+</ResponseField>
+
+<ResponseField name="fxtr cache clear [PATTERN]">
+  Forget the entries at or under an address, so the next job to request them runs the steps
+  afresh. Jobs that already used a result keep it. `PATTERN` is as for `fxtr cache list`.
+  `--address` names an exact address, `--conflicts-in JOB` the completed entries a job is in cache
+  conflict with, and `--all` everything; `--step` and `--state` narrow any of these.
+</ResponseField>
+
+<ResponseField name="fxtr cache adopt JOB [PATTERN]">
+  Make the cache offer the results a job used, local or imported, so later jobs reuse them.
+  An address that holds a different request's result is left alone unless
+  `--overwrite-cache-conflicts` is given. `PATTERN` limits adoption as for `fxtr cache list`.
+</ResponseField>
+
+## Viewer
+
+<ResponseField name="fxtr view">
+  Serve the experiment viewer for the project's jobs and open it in a browser. It prefers the
+  project's last successful port, then tries 8000 through 8050. `--no-open` only prints the URL,
+  `--host` sets the bind address, and `--port` requires an exact port and fails if it is taken.
+  It builds the project's view bundle if the renderers changed
+  since the last build, then rebuilds it whenever they change while it runs, and open pages switch
+  to the new renderers without a reload. Failed builds keep the last valid bundle, or the
+  default renderers when none exists; the viewer shows the error and keeps watching for fixes.
+  When the project's viewer is already running, it opens that one and exits.
+</ResponseField>
+
+<ResponseField name="fxtr views vendor">
+  Copy the fxtr TypeScript packages the project's renderers build against into
+  `views/vendor/fxtr/`, replacing any earlier copy. Run it after upgrading fxtr, then
+  `pnpm install` in `views/`. Commit the copy with the project.
+</ResponseField>
+
+<ResponseField name="fxtr views build">
+  Build the project's renderer package into its view bundle, which `fxtr view` serves. A failed
+  build keeps the previous bundle. A running `fxtr view` rebuilds the bundle by itself; this is
+  for building without one.
+</ResponseField>

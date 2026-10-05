@@ -1,0 +1,340 @@
+---
+title: "Renderers"
+description: "The renderer API: slots and registration, loading entities and invocations, step panels, links, panel state, the kit, and building the renderer package."
+---
+
+A project's renderers are React components, written in TypeScript in the project's renderer
+package, `views/`, and built into a view bundle that the viewer loads.
+[Visualization and custom renderers](../concepts/visualization-and-custom-renderers.mdx) explains
+how they fit into the viewer, with a small example, and
+[Designing views](../guides/designing-views.mdx) covers how a view should look and behave. This page
+is the reference for the API they use, `fxtr-view`, the contract with the viewer, and
+`fxtr-view-kit`, the building blocks, and for the package that builds them.
+
+## Registering renderers
+
+`renderer(slot, subject, id, Component)` from `fxtr-view` registers a component for a slot and a
+subject. The project's bundle, `views/src/bundle.ts`, exports its registrations as its default
+`ViewBundle`:
+
+```ts views/src/bundle.ts
+import { EntityPanel, InvocationPanel, renderer, type ViewBundle } from "fxtr-view";
+import { singleInvocation } from "fxtr-view-kit";
+import { DocumentPanel, Overview } from "./components";
+
+const bundle: ViewBundle = {
+  renderers: [
+    renderer(EntityPanel, "org.example.my_experiment.Document.v1", "my-project.DocumentPanel", DocumentPanel),
+    renderer(InvocationPanel, "my_experiment.run", "my-project.Overview", singleInvocation(Overview)),
+  ],
+};
+
+export default bundle;
+```
+
+| Slot                 | Subject                                | Props                      | What it draws                                                                                                                                 |
+| -------------------- | -------------------------------------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `EntityPanel`        | an entity type tag                     | `{ id, storage }`          | The entity, opened in a pane.                                                                                                                 |
+| `EntityInlineLink`   | an entity type tag                     | `{ id }`                   | The entity where it is referenced, inside the viewer's link. It must be static text: no `EntityLink`, buttons, or other interactive elements. |
+| `EntityHoverPreview` | an entity type tag                     | `{ id }`                   | A compact preview, shown when a link to the entity is hovered.                                                                                |
+| `InvocationPanel`    | a step's or workflow's registered name | `{ invocations, storage }` | The invocations the viewer's selection picks out; for the root workflow, a view of the whole run.                                             |
+
+The prop types are `EntityPanelProps`, `EntityViewProps` (the `id` alone), and
+`InvocationPanelProps`. Give each renderer an ID prefixed with your project's name. Two renderers
+for the same slot and subject with the same ID, including a clash with one of the viewer's own,
+keep the whole bundle from loading. Several renderers with different IDs may target the same slot
+and subject, and the viewer offers a switcher between them.
+
+Registrations belong in the bundle: a project never changes the viewer itself, its dependencies,
+or its registry.
+
+## Loading data
+
+`unwrap(useEntity(id))` loads an entity's data, suspending until it arrives, so the component can
+assume it is there and leave the loading state to the viewer. The data is the entity's stored
+form: a map of its fields, in which references to other entities arrive as `EntityID`s.
+
+A view over many entities, such as a step's outputs, loads them with the kit's `LoadEach`, which
+starts every load at once and hands its body the values loaded so far, by `idKey(id)`, with how
+many are still pending, so the view fills in as its data arrives. `parse` turns each entity's
+data into the value the body receives, and must be the same function on every render (defined
+outside the component, or memoized). Never call `useEntity` in a loop.
+
+```tsx
+<LoadEach ids={verdictIds} parse={parseVerdict}>
+  {(verdicts, pending) => <VerdictTable verdicts={verdicts} pending={pending} />}
+</LoadEach>
+```
+
+An `InvocationPanel` is handed every invocation the viewer's selection picks out (its
+`invocations` prop, each with its key in the run), and must show any number of them
+([Step panels](#step-panels) says what each holds). The kit's
+adapters turn a view of one loaded invocation record into such a panel:
+
+* `singleInvocation(View)` loads the record when there is one invocation and passes it to `View`
+  as `invocation`; for any other count it asks for one invocation to be selected.
+* `eachInvocation(View)` shows several as collapsible sections, one per invocation, each loading
+  its own record when opened.
+
+A root workflow's panel is always given its one invocation. An invocation record has the
+function's `name`, its `state` and `error`, its `inputs` by argument name, and its `output`, each
+an array entity's ID to load in turn (`output` is null until there is one). The kit's
+`invocationInput(invocation, name)` reads a named input, and `InvocationOutcome` shows a run that
+has no output yet.
+
+## Step panels
+
+A step's `InvocationPanel` is its default view: the viewer draws it in the step's pane and as the
+preview beside its card in the job's trace, so a reader sees it without asking. What it is given:
+
+* **Spawns, not records.** `invocations` holds one `Spawn` per invocation the selection picks out:
+  every invocation of the step, or fewer when the reader slices the level's dims (`slice dims`).
+  Handle any count. One spawn gets the entity it returned in full, through that entity's own
+  panel; several get a view of them all (a table, a grid, a chart) whose cells link to the entity
+  behind each.
+* **A key of the mapped and replica dims only**, by name: `spawn.key.model`, `spawn.key.sample`.
+  `spawnKeyLabel(spawn)` from `fxtr-view-kit` joins them into a label.
+* **An output array, null until the invocation has finished.** A step returning one entity
+  returns an array of one row with an empty key: `scalarEntityId(array)` reads the reference, and
+  `scalarValue(array)` reads a struct result. A step with output dims of its own
+  (`-> Annotated[Array[Hit], "[rank: int]"]`) returns those dims as the array's rows: read them
+  with `rowsOf(array)`, whose `key`s hold the output dims. So a spawn is keyed by the dims the
+  step is mapped over, and its output holds the dims the step introduces.
+* **Inputs on the record.** `useInvocation(spawn.ref)` loads the spawn's `InvocationRecord`: its
+  `state` and `error`, and its `inputs`, array IDs by argument name
+  (`invocationInput(record, "scores")` from the kit). A dim the step takes whole (a core dim of an
+  argument, such as the `[doc]` a ranking step reduces) is in neither the key nor the output;
+  show it from the input. A hook is called a fixed number of times per component, so a view over
+  many spawns' records loads each in a component of its own, which fills in when its record
+  arrives.
+
+Load the outputs in two stages: the spawns' output arrays with one `LoadEach`, then the entities
+they reference with another. A running step's spawns gain outputs as its invocations finish, and
+`LoadEach` follows them, so the panel fills in while the step runs; say how many have no result
+yet. A step mapped over `[model, prompt]` that returns a `Verdict` entity:
+
+```tsx views/src/judge.tsx
+import {
+  EntityDataError, EntityLink, idKey, isArrayData, scalarEntityId,
+  type EntityData, type EntityID, type InvocationPanelProps,
+} from "fxtr-view";
+import { InvocationHead, LoadEach, countLabel, formatNumber, layout, spawnKeyLabel } from "fxtr-view-kit";
+import { VerdictPanel, parseVerdict, type VerdictData } from "./verdict";
+
+/** A step's output array. Module-level, so `LoadEach` gets a stable `parse`. */
+function asArray(data: EntityData) {
+  if (!isArrayData(data)) throw new EntityDataError(`expected an array, got ${data.$type}`);
+  return data;
+}
+
+/** One verdict in full, or every verdict in a table that fills in as the invocations finish. */
+export function JudgePanel({ invocations }: InvocationPanelProps) {
+  const done = invocations.filter((spawn) => spawn.output !== null);
+  return (
+    <div className={layout.panel}>
+      <InvocationHead kind="step" name="my_experiment.judge">
+        <span className={layout.muted}> · {countLabel(done.length, "verdict")} of {invocations.length}</span>
+      </InvocationHead>
+      <LoadEach ids={done.map((spawn) => spawn.output!)} parse={asArray}>
+        {(arrays) => {
+          const rows = done.flatMap((spawn) => {
+            const array = arrays.get(idKey(spawn.output!));
+            return array ? [{ spawn, id: scalarEntityId(array) as EntityID<VerdictData> }] : [];
+          });
+          if (invocations.length === 1) {
+            return rows[0] ? <VerdictPanel id={rows[0].id} /> : <p className={layout.empty}>no verdict yet</p>;
+          }
+          return (
+            <LoadEach ids={rows.map((row) => row.id)} parse={parseVerdict}>
+              {(verdicts) => (
+                <table className={layout.table}>
+                  <thead><tr><th>model · prompt</th><th className={layout.num}>score</th><th>verdict</th></tr></thead>
+                  <tbody>
+                    {rows.map(({ spawn, id }) => (
+                      <tr key={spawnKeyLabel(spawn)}>
+                        <td>{spawnKeyLabel(spawn)}</td>
+                        <td className={layout.num}>{formatNumber(verdicts.get(idKey(id))?.score)}</td>
+                        <td><EntityLink id={id} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </LoadEach>
+          );
+        }}
+      </LoadEach>
+    </div>
+  );
+}
+```
+
+Register it with `renderer(InvocationPanel, "my_experiment.judge", "my-project.JudgePanel",
+JudgePanel)`. `singleInvocation` and `eachInvocation` suit a view of one invocation's record; a
+panel over many spawns, like this one, reads them directly.
+
+## Links
+
+Anything that stands for an entity should lead to it. In text and tables, `EntityLink({ id })` is
+the viewer's own link: a chip that opens the entity in a pane and shows its preview on hover. A
+chart's mark can't be a chip, so it uses `useEntityLinks()`, whose `open(id)` does what pressing
+the entity's link does, and whose `isOpen(id)` says whether a pane shows the entity.
+[Designing views](../guides/designing-views.mdx#interaction) shows how marks use them.
+
+## Panel state
+
+A panel's `storage` prop is a JSON value the viewer keeps for the panel while it is open. Keep
+what a reader chose in it (a tab, an order, a pick, a filter) with the kit's
+`useStoredState(storage, key, initial, isValid?)`, which works like `useState` over one key of
+it, so the choice survives the view remounting:
+
+```tsx
+const [order, setOrder] = useStoredState(storage, "order", "guest");
+```
+
+Stored values are trusted as the initial value's type unless you pass a type guard, `isValid`, to
+reject an obsolete choice or state from another version of the view; a rejected value reads as
+the initial one. The initial value and the guard are captured once for each storage and key. A view
+wrapped with `singleInvocation` receives `storage` when its props declare it
+(`{ invocation, storage }`). Keep hover and focus in `useState`. State a component keeps in
+`useState` starts over when a rebuild replaces the renderers; state in `storage` stays.
+
+## Styles
+
+Style a renderer with CSS Modules (`*.module.css`) beside the components that use them, and with
+the kit's `layout` classes, over the viewer's design tokens, so the view follows the viewer's
+light and dark themes. A state or variant is a `data-*` attribute (`[data-state="failed"]`), not a
+class name built from a value. [Designing views](../guides/designing-views.mdx) lists the tokens and
+what each is for.
+
+## The kit
+
+`fxtr-view` is shared with the viewer, which hands its own copy to the bundle; `fxtr-view-kit` is
+bundled with the project. Both are TypeScript source installed in the renderer package's
+`node_modules/`: read `node_modules/fxtr-view-kit/src/` (or `fxtr-view/src/`) for a signature
+this page leaves out, and run `pnpm typecheck` in `views/` (or `uv run fxtr views build`) to check
+every use against them.
+
+From `fxtr-view`:
+
+| Name                                                     | What it is                                                                          |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `renderer`, the slots, `ViewBundle`                      | registration ([above](#registering-renderers))                                      |
+| `useEntity`, `unwrap`, `useInvocation`, `idKey`          | loading an entity or an invocation record, and an ID's key                          |
+| `isArrayData`, `scalarEntityId`, `scalarValue`, `rowsOf` | reading an array entity: a step's output ([Step panels](#step-panels))              |
+| `EntityLink({ id })`                                     | the viewer's link to an entity: a chip that opens it, with a hover preview          |
+| `useEntityLinks()`                                       | `{ open(id), isOpen(id) }`: open an entity from a mark, and whether a pane shows it |
+
+From `fxtr-view-kit`:
+
+| Name                                                                                                                   | What it is                                                                                                                                                                                                                                        |
+| ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `layout`                                                                                                               | classes for elements you write: `panel`, `kindLine`, `title`, `subtitle`, `header`, `fieldsLine`, `prose`, `muted`, `empty`, `table` (the viewer's dense table), `num` (a number cell), `axis`, `grid`, `chartLabel`, `mark`, `cellMark`, `faded` |
+| `Kind`, `InvocationHead`, `InvocationOutcome`, `FieldList`                                                             | a view's kind, an invocation's head, a run without output, label–value lines                                                                                                                                                                      |
+| `ChartFrame({ label, tooltip, fallbackWidth, children: (width) => ... })`                                              | a chart's frame: measured width, and a tooltip `{ x, y, content }` in pixels from its top left                                                                                                                                                    |
+| `useWidth(fallback)`                                                                                                   | `[ref, width]` of any element, for charts in table cells                                                                                                                                                                                          |
+| `pressable(onPress, label)`                                                                                            | props that make an element a keyboard-pressable, named button                                                                                                                                                                                     |
+| `Legend({ items: [{ label, color, shape }] })`                                                                         | series swatches (`shape`: `square`, `circle`, `line`)                                                                                                                                                                                             |
+| `ScaleLegend({ scale, low, high, mid })`                                                                               | a sequential or diverging scale's gradient between end labels                                                                                                                                                                                     |
+| `seriesColor(i)`, `CHART_SERIES`, `CHART_OTHER`                                                                        | categorical colors                                                                                                                                                                                                                                |
+| `sequentialFill(t)`, `sequentialInk(t)`, `divergingFill(t)`, `divergingInk(t)`                                         | scale colors, and text on them                                                                                                                                                                                                                    |
+| `Stats`, `Stat({ label, value, note })`                                                                                | a row of headline numbers                                                                                                                                                                                                                         |
+| `Segmented({ label, options, value, onChange })`, `Select(...)`                                                        | controls; `options` are `{ value, label }`                                                                                                                                                                                                        |
+| `DetailBox({ title, onClose, children })`                                                                              | the box showing a pick under a chart                                                                                                                                                                                                              |
+| `formatNumber(v, digits)`, `formatPercent(share, digits)`, `formatSigned(v, digits)`, `countLabel(n, noun)`, `MISSING` | numbers as the viewer writes them                                                                                                                                                                                                                 |
+| `useStoredState(storage, key, initial, isValid?)`                                                                      | `useState` kept in the panel's storage ([above](#panel-state))                                                                                                                                                                                    |
+| `singleInvocation`, `eachInvocation`, `invocationInput`, `LoadEach`                                                    | invocation adapters and loading ([above](#loading-data))                                                                                                                                                                                          |
+| `spawnKeyLabel(spawn)`                                                                                                 | a spawn's key as a label ([Step panels](#step-panels))                                                                                                                                                                                            |
+| `MessageList`, `excerpt`                                                                                               | chat turns, and text cut to a length                                                                                                                                                                                                              |
+
+The `fxtr-view-behaviors` package has views of [behaviors](../../../behaviors/references/index.mdx) conversation records, for a
+project that stores them.
+
+## The renderer package
+
+`fxtr new` writes the renderer package, `views/`, with an empty bundle. `--example` fills the
+bundle with a panel and an inline link for the example's greeting, and a results overview of its
+workflow with a chart, `views/src/overview.tsx`. Install
+its dependencies once, and commit the `views/pnpm-lock.yaml` it writes with your project:
+
+```bash
+(cd views && pnpm install)
+```
+
+### Building and reloading
+
+`uv run fxtr view` builds the package into its view bundle when it starts if the bundle is missing
+or stale, and again whenever you save a change to it while it runs. The open viewer then switches
+to the new renderers in place, without a reload, keeping the job, level, and panes you have open,
+and what each panel keeps in its `storage` ([Panel state](#panel-state)).
+
+To build without the viewer:
+
+```bash
+uv run fxtr views build
+```
+
+This runs the package's build and, if the result checks out, replaces the bundle in `views/dist/`.
+A failed build keeps the previous bundle and prints why it failed. Builds use the `node` on your
+`PATH`, which must be Node 22 or later; fxtr refuses an older one and says how to fix it.
+
+The bundle is an ES module holding the renderers, an optional stylesheet, and a manifest naming
+both and recording the version of the view API they were built against. The viewer loads it when
+its page loads, checks that version against its own, and adds the bundle's renderers after its
+defaults. React, jotai, and `fxtr-view` are not bundled in: the viewer hands its own copies to the
+bundle, so renderers share the viewer's hook state and context. Everything else the renderers
+import, the kit, a chart library, your own components, is bundled in.
+
+The fxtr packages the renderers import are not on npm. The project carries its own copy in
+`views/vendor/fxtr/`, committed with the project. After upgrading fxtr, refresh the copy and
+reinstall before building:
+
+```bash
+uv run fxtr views vendor
+(cd views && pnpm install)
+uv run fxtr views build
+```
+
+### When the bundle doesn't load
+
+If a renderer build fails, including at startup, `fxtr view` keeps serving the last valid bundle,
+or uses the default renderers when none exists. The side rail and terminal show the error and
+the end of the build's output. Fix the source and save it to trigger another build; the viewer
+updates without a restart.
+
+If a bundle fails to load in the browser, the viewer keeps the renderers it already loaded, or
+uses its defaults when none were loaded, and the side rail says why.
+
+### Adding a package to a project
+
+To add a renderer package to a project without one, write these parts:
+
+* `[tool.fxtr.views] package = "views"` in `pyproject.toml`.
+* `views/vendor/fxtr/`, the fxtr TypeScript packages: `uv run fxtr views vendor` copies them from
+  the installed fxtr. They are TypeScript source; inside `views/`, their own imports (React,
+  jotai, one another) resolve to `views/node_modules`.
+* `views/package.json`, linking the fxtr packages from that copy
+  (`"fxtr-view": "link:./vendor/fxtr/packages/fxtr-view"`, and likewise `fxtr-view-kit`,
+  `fxtr-view-bundle` for the build, and `fxtr-view-behaviors` if you use it). Its build script is
+  `"build": "vite build --configLoader runner"`, whose flag lets the shared build preset's
+  TypeScript load; keep it when editing the script. React, jotai, TypeScript, Vite, and
+  `@types/node` are its development dependencies. `fxtr views vendor` names any registry package
+  a linked fxtr package needs that `package.json` lacks (`fxtr-view-shell-util` needs
+  `@ipld/dag-cbor` and `multiformats`).
+* `views/pnpm-workspace.yaml`, with `packages: ["."]` and `onlyBuiltDependencies: [esbuild]`, which
+  gives the package its own installation and lockfile even inside another workspace, and allows
+  esbuild's install script.
+* `views/vite.config.ts`, the build, which is always the shared preset's:
+  `export default defineViewBundleConfig({ entry: "src/bundle.ts" })`.
+* `views/src/bundle.ts`, the entry, whose default export is a `ViewBundle`.
+* `views/tsconfig.json`, extending `./vendor/fxtr/tsconfig.base.json`, which also declares CSS
+  Modules.
+* `node_modules/` and `dist/` in the project's `.gitignore`.
+
+Then install its dependencies and commit the lockfile, as for a package `fxtr new` wrote.
+
+### Testing renderers
+
+If you test renderers with Vitest, set `resolve.dedupe` to
+`["react", "react-dom", "jotai", "fxtr-view"]` in `vitest.config.ts`, so the linked fxtr packages
+use the test environment's React and context instances.

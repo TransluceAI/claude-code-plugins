@@ -1,0 +1,127 @@
+---
+title: "Importing external datasets"
+description: "Bring external datasets into fxtr as typed arrays for processing in workflows."
+---
+
+Import an external dataset into fxtr as a typed array, then pass it to a workflow to process it.
+The job records the data it uses, so you can inspect which inputs produced each result and run
+other analyses against the same dataset.
+
+There are two recommended ways to make an imported dataset available to jobs:
+
+* **As a workflow input built in the launcher.** The launcher reads and validates the file and
+  passes a typed array to the job. This suits a fixed file.
+* **As a project array.** A named dataset kept in the database, which jobs run against as
+  snapshots. This suits a dataset you curate over time.
+
+Configuration fixed in the experiment's code goes in as a **source array**, added inside the
+workflow with `context.add_source_array(...)`. Credentials belong in the environment, never in
+inputs. In every case, the launcher is the only code that reads files: steps and workflows are
+hermetic (see
+[Hermeticity](../concepts/workflows-and-steps.mdx#hermeticity-and-handling-external-state)).
+
+## External datasets
+
+Read and validate external data in the launcher, convert it to a typed array, and pass it to the
+workflow. For a CSV with columns `case_id,prompt,expected`:
+
+```python
+import csv
+from pathlib import Path
+from typing import TypedDict
+
+from fxtr.entity_defns.array import Array
+
+
+class Case(TypedDict):
+    prompt: str
+    expected: str
+
+
+def load_cases(path: Path):
+    with path.open(newline="", encoding="utf-8") as file:
+        return Array.from_records(csv.DictReader(file), type=("[case_id: str]", Case))
+```
+
+Then, inside an [async launcher](running-and-viewing-jobs.mdx#launch-from-python):
+
+```python
+cases = load_cases(Path("cases.csv"))
+result = await run_job(client, experiment, {"cases": cases}, root="cases-v1")
+```
+
+Submitting stores the input array with the job, so the job keeps the exact data it ran on even if
+the CSV changes later. The workflow receives a `[case_id: str]` handle to map steps over, and can
+pass individual fields to steps with `cases.field("prompt")` and `cases.field("expected")`.
+
+When loading a dataset:
+
+* Key rows by stable IDs from the source, not by row number, so that reordering or adding rows
+  doesn't change which cached result belongs to which row.
+* Convert values to the declared types yourself. `Array.from_records` validates the schema and
+  rejects duplicate keys, but it doesn't convert numbers, booleans, or missing CSV values.
+* Check dataset-specific requirements, such as nonempty prompts, in the loader.
+* Read files only in the launcher. Steps and workflows must be hermetic: they read no files and
+  depend on nothing outside their inputs, so that the job's record is complete and anyone can
+  resume it. See [Hermeticity](../concepts/workflows-and-steps.mdx#hermeticity-and-handling-external-state).
+
+## Configuration
+
+Anything that affects a result should reach its step as an input: data, model IDs, prompts, and
+sampling settings. Changing one of them then changes what the step receives, so a result computed
+from the old settings isn't reused (see [Managing the step cache](../concepts/managing-the-step-cache.mdx)).
+
+For settings fixed in the experiment's code, add a source array inside the workflow:
+
+```python
+judge_rubric = context.add_source_array("judge_rubric", Array.scalar(RUBRIC, str))
+```
+
+This makes the rubric an input of every step that receives it, so it is part of those steps'
+cache fingerprints and a changed rubric is never matched with an old result. A step that read
+`RUBRIC` directly from the module would have the same fingerprint whatever the constant said,
+which is the situation to avoid.
+
+Settings used together often belong in one entity, such as a judge configuration holding the
+model ID, rubric, and sampling parameters. Pass a reference to it as an input, so every result
+points at the exact settings that produced it. See
+[Calling language models](../../../behaviors/references/guides/language-models.mdx).
+
+## Entity-valued inputs
+
+To pass entities, store each one with the client first, then build an array from the returned
+references:
+
+```python
+async with open_local_client(__file__) as client:
+    intro = await client.store(Document(title="Intro", text="..."))
+    documents = Array.from_items([(("intro",), intro)], ("[doc: str]", BoundID[Document]))
+    await run_job(client, experiment, {"documents": documents}, root="docs-v1")
+```
+
+The only way to get an entity back is its ID, so something persisted must reference it: here the
+job's input array does. An entity stored in a launcher and referenced by nothing can't be found
+again, so always pass the references on as a job input or write them into a project array.
+
+## Project arrays
+
+A **project array** is a named, editable, versioned array stored in the project's database. It
+suits a dataset you curate over time and launch many jobs against. A job always runs against an
+immutable **snapshot**, so editing the array later doesn't change what earlier jobs used:
+
+```python
+await client.create_array("word_count_prompts", ("[prompt: str]", str))
+await client.replace_array("word_count_prompts", prompts)
+snapshot = await client.snapshot_array("word_count_prompts")
+result = await run_job(client, experiment, {"prompts": snapshot.array}, root="word-count-v1")
+```
+
+`replace_array` sets the complete contents; `upsert_rows` adds or updates the given rows and keeps
+the rest. From the command line, pass a snapshot as an input with `@`:
+
+```bash
+uv run fxtr run word_count.experiment --input prompts=@word_count_prompts
+```
+
+Project arrays are optional. When you don't need a named, editable dataset, pass an ordinary
+`Array` to `run_job` directly.

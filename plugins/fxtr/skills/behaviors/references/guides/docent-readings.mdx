@@ -1,0 +1,47 @@
+---
+title: "Docent readings"
+description: "Convert conversations to Docent's data models, and run a Docent reading against a transcript or agent run with a model you choose."
+---
+
+Docent is Transluce's platform for analyzing AI agent behavior, whose readings ask a language model
+questions about transcripts. behaviors can convert its conversation records to Docent's data
+models, and run a Docent reading locally:
+render a reading's prompt against a transcript or agent run, call a model through a `ModelAPI`
+you provide, and parse and validate the answer and its citations. Install the `docent` extra,
+`behaviors[docent]`, and import from `behaviors.implementations.docent`.
+
+## Converting records
+
+`to_docent_transcript(transcript)` and `to_docent_agent_run(agent_run)` turn behaviors'
+`Transcript` and `AgentRun` (see
+[Transcripts](conversation-records.mdx#transcripts)) into the Docent SDK's objects,
+and `to_docent_message(message)` converts one message.
+
+## Running a reading
+
+`DocentReadingStepConfig` describes one reading:
+
+* `prompt_template_segments`: the segments of a Docent reading's prompt template, a tuple of
+  strings and placeholder dictionaries, such as
+  `{"param_name": "conversation", "param_type": "transcript", "is_list": False}`;
+* `output_schema`: the JSON Schema the answer must conform to;
+* `input_param_name`: the placeholder the transcript or agent run fills, which must be one of
+  the segments' placeholders (`param_type` `"transcript"` for a `Transcript`, `"agent_run"` for an
+  `AgentRun`);
+* `max_output_attempts`: how many times to sample the model when its answer doesn't parse or
+  validate, 3 by default;
+* `default_parsed_response_on_failure`: what to return when those attempts run out; without it,
+  the last validation error is raised.
+
+Then construct `DocentReadingStep(config=config, model_api=api, sampling=sampling)` and call
+`await reader.read(transcript_or_agent_run)` with an input of the type the template declares.
+`retry=RetryConfig(...)` retries transport failures, as for any model call (see
+[Failures and retries](rollout-outcomes.mdx#failures-and-retries)), separately from
+the attempts at a valid answer.
+
+`read` returns a `DocentReadingStepResult` with the `parsed_response`, the `reader_transcript` of
+the model call, and the `retry_error_transcripts` of attempts whose answers failed to validate. The
+fallback from `default_parsed_response_on_failure` has no reader transcript. A transport failure
+that outlasts its retries is returned as a `ModelCallFailure`. You own the model API you pass in:
+close it when the reading is done, as the
+[judge step](language-models.mdx#a-judge-step) closes its adapter.

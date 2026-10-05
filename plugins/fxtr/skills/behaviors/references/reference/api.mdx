@@ -1,0 +1,110 @@
+---
+title: "API overview"
+description: "The layers of behaviors, where each is imported from, the provider adapters, and the request, response, and sampling types."
+---
+
+behaviors is built in layers, from one model request up to a whole conversation with an
+environment. Use the lowest layer that fits: a judge needs one request, a conversation needs a
+session, and a conversation against simulated users or tools needs a context policy. The
+[guide to calling language models](../guides/language-models.mdx) shows the common cases as
+fxtr steps.
+
+## Choose a layer
+
+| Need                                               | API                                                                                                                                                        |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| One model request, no conversation state           | `ModelAPI.generate(ModelRequest)`, from `behaviors.interfaces.model_apis`; returns a `ModelResponse` or a `ModelCallFailure`.                              |
+| Incremental output from a request                  | `StreamingModelAPI.generate_with_events(request, callback)`.                                                                                               |
+| One request with a retry schedule                  | `generate_with_retries(api, request, retry=..., failure_categories_to_retry=...)`, from `behaviors.implementations.models`.                                |
+| A conversation with accumulated messages           | `chat_session_model_from_api(api, sampling, retry=...)`, from `behaviors.implementations.models`, which creates an independent session per conversation.   |
+| A model against an environment or a simulated user | `run_chat_rollout(model, context_policy, ...)`, from `behaviors.rollouts.chat`; returns a `ChatRollout`.                                                   |
+| Fixed user prompts                                 | `ScriptedUserSimulator(messages=(...))`, made a policy with `context_policy_from_user_simulator(..., initialization=...)`.                                 |
+| User prompts interleaved with tool calls           | `context_policy_from_user_and_tools(user, tools, initialization=...)`.                                                                                     |
+| A first turn followed only by tool turns           | `context_policy_from_tool_policy(tools, first_turn_messages=..., initialization=...)`.                                                                     |
+| A custom or adaptive conversation                  | `context_policy_from_generator`, or a subclass of `GeneratorContextPolicy`; for checkpoints, implement the `ContextPolicy` and session protocols directly. |
+| Plain transcripts for viewers or readers           | `ChatRolloutTranscriptProjection`, from `behaviors.rollouts.chat`, with `Transcript`, `TranscriptGroup`, and `AgentRun`.                                   |
+| Docent readings                                    | `DocentReadingStep` and the conversions in `behaviors.implementations.docent`, with `behaviors[docent]`.                                                   |
+
+The guides cover the layers above the request:
+[policies and tools](../guides/policies-and-tools.mdx),
+[rollout outcomes and retries](../guides/rollout-outcomes.mdx),
+[conversation records and checkpoints](../guides/conversation-records.mdx), and
+[Docent readings](../guides/docent-readings.mdx). behaviors supplies no general judge and no
+model-driven user simulator: build those for your experiment from these interfaces, as the
+[judge step](../guides/language-models.mdx#a-judge-step) does.
+
+## Where things are imported from
+
+* `behaviors.types` exports the data types: messages and content blocks, requests, responses,
+  sampling and reasoning parameters, failures, retry settings, stream events, rollouts and their
+  turns and statuses, and transcripts.
+* `behaviors.implementations.models` exports `chat_session_model_from_api`,
+  `generate_with_retries`, `DEFAULT_FAILURE_CATEGORIES_TO_RETRY`, and `SamplingOverrides`.
+* `behaviors.implementations.context_policies` exports the user simulators, tool policies, and
+  policy combinators.
+* `behaviors.interfaces` holds the protocols: `model_apis`, `chat_session_models`,
+  `context_policies`, and `projections`.
+* The provider adapters are each in a module of their own (below), imported explicitly, because
+  they need the provider SDKs.
+
+## Sessions and factories
+
+`ModelAPI` keeps no state between calls: every request carries the whole context. A
+`ChatSessionModel` is a factory whose sessions (`ChatSession`) keep a conversation's history, and
+a `ContextPolicy` is a factory whose sessions supply the model's initialization and then each next
+`ContextTurn`, or `EndRollout` to finish. Keep mutable state for one conversation in its sessions
+(or a generator's locals), never on a factory that every conversation shares.
+
+`run_chat_rollout` starts a session of each factory and closes both when it returns, including on
+cancellation. It does not own the provider client, which the caller closes with
+`await api.aclose()`. Use a fresh session for each independent conversation. The sessions of
+`chat_session_model_from_api` accept `None` or `SetSystemMessage` as their initialization; any
+other kind needs a session model that understands it. Close sessions you start yourself with
+`aclose()`.
+
+## Provider adapters
+
+Install the provider SDKs with the `models` extra, `behaviors[models]`. The core types, context
+policies, and rollouts with a fake model need no SDK.
+
+| Provider interface                               | Adapter                                                                              |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------ |
+| Anthropic Messages                               | `from behaviors.implementations.models.anthropic import AnthropicMessagesAPI`        |
+| OpenAI Responses                                 | `from behaviors.implementations.models.openai_responses import OpenAIResponsesAPI`   |
+| OpenAI Chat Completions, and compatible services | `from behaviors.implementations.models.openai_compatible import OpenAICompatibleAPI` |
+
+Construct an adapter with the provider's model ID, as in `OpenAIResponsesAPI("gpt-6-luna")`;
+[Choosing models](../guides/choosing-models.mdx) shows how to find IDs. Adapters read
+credentials from the environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`). Each also takes
+`api_key` and `base_url`, for another account or a compatible service, or an SDK client of your
+own with `client=...`, but not both. An adapter closes a client it created, and leaves an
+injected client to its caller. Never store credentials in experiment inputs or entities.
+
+The adapters turn off the SDKs' own retries, so that behaviors decides when a call is tried again
+(see [Rollout outcomes and retries](../guides/rollout-outcomes.mdx#failures-and-retries)).
+
+## Requests and responses
+
+A `ModelRequest` has `context` (the messages), `tools`, `tool_choice`, `parallel_tool_calls`, and
+`sampling`, all required: pass `()` or `None` where they don't apply. `generate` returns a
+`ModelResponse` with `id`, `output` (a tuple of messages), `stop_reason`, and `usage`, or a
+`ModelCallFailure`; check which before reading the response's fields. In `usage`, the counts of
+cached and reasoning tokens are `None` when the provider doesn't report them.
+
+## Sampling settings
+
+`SamplingParams` has `max_tokens`, `temperature`, `top_p`, `stop_sequences`, `reasoning`, and a
+provider-specific `extra`. `ReasoningParams` has `enabled`, `budget_tokens`, and `effort`
+(`"minimal"` to `"max"`, clamped to the levels a provider offers). A setting left `None` leaves
+the choice to the adapter or the provider, and which settings take effect depends on the adapter
+and the model: `OpenAIResponsesAPI`, for example, doesn't apply `stop_sequences`. Leave a setting
+unset unless your adapter and model support it, and don't expect `extra` settings to carry over
+from one adapter to another. Write numeric fields with their declared types, such as
+`temperature=0.0` rather than `0`, since stored records are checked strictly.
+
+`SamplingOverrides(inner=api, reasoning=...)` wraps an adapter and pins the reasoning settings of
+every request; despite its name, it overrides reasoning only.
+
+Provider prompt-cache hints (`CacheableContentText`, `CacheableToolParam`, `CacheControl`) ask the
+provider to cache a prompt's prefix. They are unrelated to fxtr's
+[step cache](../../../fxtr/references/concepts/managing-the-step-cache.mdx), which keeps completed step results.

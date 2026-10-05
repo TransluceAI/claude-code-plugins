@@ -1,0 +1,81 @@
+---
+title: "Conversation records and checkpoints"
+description: "What a rollout records, how conversations are stored as fxtr entities and flattened into transcripts, and how to checkpoint a session."
+---
+
+A rollout returns a `ChatRollout`: its context turns, its model turns, how it ended, and the
+initialization its model session started from. This page covers what those records hold, how they
+are stored and shown, and how they differ from a session's checkpoint.
+
+## Messages and content
+
+Messages are `SystemMessage`, `UserMessage`, `AssistantMessage`, and `ToolMessage`, each holding a
+tuple of typed content blocks. An assistant's content may include text, tool calls, reasoning,
+redacted reasoning, or summarized reasoning, so don't assume every block has `.text`. For the
+answer's text alone, keep the `ContentText` blocks of the turn's `AssistantMessage`s, as the
+[judge step's](language-models.mdx#a-judge-step) `answer_text` does, and keep the
+structured rollout for later inspection.
+
+A model turn made by an API-backed session records the provider's response in
+`ModelTurn.metadata["response"]`, as JSON, including its stop reason and usage. Metadata is defined
+by whatever produced the turn, so validate it before scoring with it.
+
+## Storing records
+
+`ChatRollout`, `Transcript`, `TranscriptGroup`, `AgentRun`, and the concrete session
+initializations, such as `SetSystemMessage`, are fxtr entities, with type IDs of the form
+`org.transluce.behaviors.<Class>.v1`. A step that returns a `ChatRollout` has it stored like any
+other entity (see [Entities and custom types](../../../fxtr/references/concepts/entities-and-custom-types.mdx)), and
+`await storage.store(entity)` and `await storage.load(ref)` work on them too. To load a bare ID,
+pass the concrete type, as in `as_type=ChatRollout`, not an abstract base such as
+`SessionInitialization`. A tree of transcripts and groups is stored as one entity, so there is no
+need to store each child separately.
+
+fxtr checks stored records strictly: give fields their declared types (`temperature=0.0`, not
+`0`), and keep metadata to JSON values with string keys.
+
+## Transcripts
+
+`ChatRolloutTranscriptProjection`, from `behaviors.rollouts.chat`, flattens a rollout into a plain
+`Transcript`: `await ChatRolloutTranscriptProjection().to_transcript(rollout)` gives one message
+list, starting with the system message of a recorded `SetSystemMessage` initialization and
+followed by the turns in order, including a final context turn the model never answered.
+`to_agent_run` wraps that transcript in an `AgentRun`. The projection drops each turn's metadata,
+so judge from the native rollout when you need usage, stop reasons, or other metadata.
+
+## Showing conversations in the viewer
+
+The `fxtr-view-behaviors` package draws rollouts, transcripts, transcript groups, agent runs, and
+system-message initializations as conversations. To use it, spread its `behaviorsRenderers` into
+your project's bundle:
+
+```ts views/src/bundle.ts
+import type { ViewBundle } from "fxtr-view";
+import { behaviorsRenderers } from "fxtr-view-behaviors";
+
+const bundle: ViewBundle = {
+  renderers: [...behaviorsRenderers],
+};
+
+export default bundle;
+```
+
+A new project's renderer package doesn't depend on it yet: add
+`"fxtr-view-behaviors": "link:./vendor/fxtr/packages/fxtr-view-behaviors"` to the dependencies in
+`views/package.json`, like the other fxtr packages, and run `pnpm install` in `views/` (see
+[The renderer package](../../../fxtr/references/reference/renderers.mdx#the-renderer-package)). The package also exports
+`ChatRolloutView`, for a rollout inside a view of your own, and `ComparedRollouts`.
+
+## Checkpointing sessions
+
+A serializable session can save its state and be restored from it. `await session.get_state()`
+returns a JSON object, and `await factory.restore_session(state)` starts a session in that state.
+The sessions of `chat_session_model_from_api` and of `ScriptedUserSimulator` support this, and the
+`serializable_context_policy_from_*` combinators build checkpointable policies when every component
+they combine is checkpointable. Generator-based policies can't be checkpointed, because a
+suspended generator can't be saved.
+
+A checkpoint is not a stored record: it is a session's working state, apart from the transcript
+entities and from fxtr's step cache. fxtr doesn't resume a partly finished rollout from a
+checkpoint: a step that failed partway runs again from the start when its job resumes. Close the
+sessions you start yourself with `aclose()`.

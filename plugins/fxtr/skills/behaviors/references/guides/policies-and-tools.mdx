@@ -1,0 +1,84 @@
+---
+title: "Policies and tools"
+description: "Decide what the model sees each turn: scripted users, tool policies, their combinations, and custom conversation flows."
+---
+
+A **context policy** is the model's environment in a rollout. It supplies the session's
+initialization, such as a system message, then each turn the model sees next (a `ContextTurn`),
+until it ends the rollout with `EndRollout`. `run_chat_rollout(model, policy, ...)` alternates the
+policy's turns with the model's. behaviors builds policies from smaller parts: a **user
+simulator** writes the user's messages, and a **tool policy** answers the model's tool calls.
+These come from `behaviors.implementations.context_policies`.
+
+## Scripted users
+
+`ScriptedUserSimulator(messages=(...))` sends one scripted message each time it is consulted,
+then returns `EndRollout()`. `context_policy_from_user_simulator(user, initialization=...)` makes
+it a policy, as in the [conversation step](language-models.mdx#a-conversation-as-a-step).
+That policy never offers the model tools, and raises if the model calls one anyway.
+
+## Tools
+
+Tool definitions describe tools to the model; behaviors never runs a function because a tool
+call names it. The tool policy executes calls and validates their inputs. A tool policy implements
+these async methods, whose structural protocols are `ToolPolicy` and `ToolPolicySession` in
+`behaviors.interfaces.context_policies`:
+
+* `ToolPolicy.start_session()` creates an independent tool session for one rollout.
+* `available_tools()` returns the tool definitions: `ToolParam`s, each with a name, a
+  description, a JSON schema of its input, `strict`, and `input_examples` (pass `None` explicitly
+  for an optional field you don't use).
+* `generate_tool_turn(tool_uses)` returns a `ToolTurn` with one `ToolMessage` for each
+  `ContentToolUse`, in the same order and with matching `tool_call_id`s.
+* `aclose()` releases the session's resources.
+
+`NoTools` is a tool policy that offers none.
+
+Two combinators make a tool policy part of a context policy:
+
+* `context_policy_from_user_and_tools(user, tools, initialization=...)` sends model turns that
+  contain tool calls to the tool policy, and every other turn to the user simulator, which sees
+  the model's messages since it was last consulted. By default
+  (`show_tool_calls_to_user=False`), the simulated user doesn't see tool calls or their results.
+* `context_policy_from_tool_policy(tools, first_turn_messages=..., initialization=...)` starts
+  with fixed messages, answers each model turn's tool calls, and ends the rollout when the model
+  takes a turn without tool calls. Cap a runaway loop with `run_chat_rollout`'s `max_turns`.
+
+A tool policy can't end a rollout; only a user simulator or a full context policy can. An
+environment that should end when, say, a submit tool completes a task needs a context policy of
+its own (below).
+
+## Custom conversation flows
+
+For a flow the combinators don't express (a user who answers depending on what the model said,
+tools offered only at some turns), write the policy as an async generator: each `yield` gives the
+next context turn, and the model's reply comes back as the value of the `yield`:
+
+```python
+from behaviors.implementations.context_policies import (
+    ContextPolicyGenerator, context_policy_from_generator,
+)
+from behaviors.types import ContentText, ContextTurn, EndRollout, UserMessage
+
+async def turns() -> ContextPolicyGenerator:
+    reply = yield ContextTurn(
+        messages=(UserMessage(content=(ContentText(text="Choose a color."),)),),
+        available_tools=None,
+    )
+    # Inspect reply.messages here to choose a data-dependent next turn if needed.
+    yield EndRollout(metadata={"received_reply": reply is not None})
+
+policy = context_policy_from_generator(turns, initialization=None)
+```
+
+Pass the generator function (`turns`), not a running generator: each rollout starts its own.
+Yield `EndRollout` explicitly to finish, since a generator that simply returns raises an error.
+For a reusable policy with settings of its own, subclass `GeneratorContextPolicy`, overriding
+`generate_turns`, and `generate_initialization` if its sessions need one.
+
+A generator-based policy can't be checkpointed, because a suspended generator can't be saved. A
+policy that must be checkpointed implements the `ContextPolicy` and `ContextPolicySession`
+protocols directly (see
+[Checkpointing sessions](conversation-records.mdx#checkpointing-sessions)). The
+combinators above are one reasonable way to sequence users and tools; a flow with different rules
+can be written the same way, with their source as a reference.
