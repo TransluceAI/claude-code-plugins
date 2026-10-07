@@ -21,8 +21,9 @@ already depends on fxtr, `uv run fxtr new` does the same):
 ```text
 pyproject.toml            the project, its dependency on fxtr, and [tool.fxtr]
 README.md                 how to run it
-.gitignore                fxtr.local.toml, .venv/, __pycache__/, .fxtr/ (where `fxtr view`
-                          records its address), node_modules/, and dist/
+.gitignore                fxtr.local.toml, .env, .venv/, __pycache__/, .fxtr/ (where
+                          `fxtr view` records its address), node_modules/, and dist/
+.env                      API keys for model providers
 src/my_project/
     __init__.py
 views/                    the renderer package, with an empty bundle
@@ -52,7 +53,7 @@ The file `fxtr new` writes, without its comments:
 name = "my-project"
 version = "0.1.0"
 description = "A fxtr project"
-requires-python = ">=3.13"
+requires-python = ">=3.12.4"
 dependencies = ["fxtr[runner,debug-web]>=0.1.0"]
 
 [tool.uv]
@@ -134,3 +135,16 @@ point the project at a scratch schema while experimenting (see
 
 fxtr reads both files strictly: a setting it doesn't know, or a value of the wrong type, is an
 error, so a misspelled setting is never silently ignored.
+
+## `.env`
+
+`.env` holds the API keys of the model providers your experiments
+call. `fxtr new` writes one with empty placeholders:
+
+```bash .env
+ANTHROPIC_API_KEY=
+OPENAI_API_KEY=
+```
+
+Fill in the keys you use and add any other variable your experiments read.
+Keys in `.env` override variables set in the environment.

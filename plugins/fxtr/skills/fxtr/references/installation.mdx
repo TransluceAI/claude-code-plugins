@@ -1,57 +1,93 @@
 ---
 title: "Installation"
-description: "Install fxtr from PyPI and verify the setup with an example project."
+description: "Install fxtr and get started with an example project"
 ---
 
-fxtr is on PyPI. You don't install it on its own: each project depends on it, and `fxtr new`
-writes a project that does.
-
-## Prerequisites
-
-* [uv](https://docs.astral.sh/uv/) 0.12.2 or newer, and git (or jj).
-* A Postgres server. The steps below run one locally with Docker; any Postgres server works.
-* For the viewer renderers a project builds: [Node](https://nodejs.org/) 22 or newer and
-  [pnpm](https://pnpm.io/) 10. The renderer build runs with the `node` and `npm` on your `PATH`.
-
-## Verify the installation with an example
-
-The following steps create and run a complete greeting example. The `--example` flag includes
-the experiment code and its launcher, so you can check that your installation works before
-writing an experiment of your own.
-
-Without `--example`, `fxtr new` creates an empty project with no experiment or launcher.
-[Your first experiment](first-experiment.mdx) walks through that path from project creation
-to writing and running your own code.
-
 <Steps>
-  <Step title="Start Postgres">
-    fxtr keeps every job, result, and cache entry in Postgres. To run a local server in a
-    container:
+  <Step title="Install the agent skills" id="install-the-agent-skills">
+    These skills teach your agent how to write experiment logic, import data, operate the runner and viewer, manage their state, and much more. Just ask for what you want!
+
+    <Tabs>
+      <Tab title="Claude Code">
+        From a terminal:
+
+        ```bash
+        claude plugin marketplace add TransluceAI/claude-code-plugins
+        claude plugin install fxtr@transluce-plugins
+        ```
+
+        To update the skills later, refresh the marketplace, update the plugin, and then restart
+        Claude Code:
+
+        ```bash
+        claude plugin marketplace update transluce-plugins
+        claude plugin update fxtr@transluce-plugins
+        ```
+      </Tab>
+
+      <Tab title="Codex">
+        From a terminal:
+
+        ```bash
+        codex plugin marketplace add TransluceAI/codex-plugins
+        codex plugin add fxtr@transluce-plugins
+        ```
+
+        To update the skills later, upgrade the marketplace. This also updates the installed plugin:
+
+        ```bash
+        codex plugin marketplace upgrade transluce-plugins
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="System prerequisites" id="prerequisites">
+    Before continuing, make sure you have the following tools installed on your machine:
+
+    | Tool                                             | Install                                                                                                                                                                           |
+    | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+    | [uv](https://docs.astral.sh/uv/) 0.12.2 or newer | [uv installation](https://docs.astral.sh/uv/getting-started/installation/).                                                                                                       |
+    | [Docker](https://www.docker.com/)                | On macOS, [Docker Desktop](https://docs.docker.com/desktop/setup/install/mac-install/). On Linux, [Docker Engine](https://docs.docker.com/engine/install/) for your distribution. |
+    | [Node](https://nodejs.org/) 22 or newer          | The [Node download page](https://nodejs.org/en/download) gives commands for each system and version manager.                                                                      |
+    | [pnpm](https://pnpm.io/) 10                      | `npm install -g pnpm@10`, once Node is installed. Other methods: [pnpm installation](https://pnpm.io/installation).                                                               |
+    | git                                              | Usually preinstalled. Otherwise see [Installing Git](https://git-scm.com/book/en/v2/Getting-Started-Installing-Git). jj also works.                                               |
+  </Step>
+
+  <Step title="Start Postgres" id="start-postgres">
+    fxtr keeps every job, result, and cache entry in Postgres. To run a local server in a container:
 
     ```bash
     docker run -d --name fxtr-postgres -p 55433:5432 \
       -e POSTGRES_USER=fxtr -e POSTGRES_PASSWORD=fxtr -e POSTGRES_DB=fxtr postgres:16
     ```
 
-    It listens on port `55433`, with user, password, and database all named `fxtr`.
+    It listens on port `55433`, with user, password, and database all named `fxtr`, so its URL is
+    `postgresql+asyncpg://fxtr:fxtr@localhost:55433/fxtr`.
   </Step>
+</Steps>
 
+## Run an example
+
+To check your installation, you can create and run a complete greeting example:
+
+<Steps>
   <Step title="Create the example project">
     ```bash
-    uvx fxtr new ~/code/fxtr-example --example
+    mkdir ~/fxtr
+    uvx fxtr new ~/fxtr/fxtr-example --example
     ```
 
     This writes a uv project that depends on fxtr, with a complete greeting experiment in
     `src/fxtr_example/experiment.py`, a `launch.py` that runs it, and greeting renderers for
     the viewer. It also runs `git init` and prints the next steps.
 
-    Install the example's Python and renderer dependencies, then build its renderers:
+    Install the example's Python and renderer dependencies:
 
     ```bash
-    cd ~/code/fxtr-example
+    cd ~/fxtr/fxtr-example
     uv sync
     (cd views && pnpm install)
-    uv run fxtr views build
     ```
   </Step>
 
@@ -74,7 +110,6 @@ to writing and running your own code.
     ```
 
     This serves the experiment viewer at `http://127.0.0.1:8000/` and opens it in your browser.
-    Leave it running: each job you launch opens in it.
   </Step>
 
   <Step title="Commit and launch the example">
@@ -85,8 +120,7 @@ to writing and running your own code.
     uv run python launch.py
     ```
 
-    The included code greets three guests; you do not need to write any experiment code for
-    this check:
+    The included code greets three guests:
 
     ```text
     job f0d6b1ac-a781-4b93-a571-edef402ad131: running
@@ -98,9 +132,8 @@ to writing and running your own code.
     Hello, Grace!
     ```
 
-    The job opens in a new tab of the viewer, showing its graph: the guest list, the `greet` step
-    mapped over it, and each greeting it produced. Without a viewer running, the launch prints how
-    to start one instead of the link.
+    The viewer switches to the job, showing its graph: the guest list, the `greet` step mapped
+    over it, and each greeting it produced.
   </Step>
 </Steps>
 
@@ -129,7 +162,7 @@ run `pnpm install` in `views/` and rebuild.
 
 <CardGroup cols={2}>
   <Card title="Your first experiment" icon="flask" href="first-experiment.mdx">
-    Write an experiment of your own, step by step.
+    Bring a question about language models, and run an experiment that answers it.
   </Card>
 
   <Card title="Core concepts" icon="book" href="concepts/overview.mdx">

@@ -99,12 +99,17 @@ def check_docent(plugin_dir: Path) -> None:
             fail(f"local credential/config file must not be published: {path}")
 
 
+FXTR_SKILLS = ["behaviors", "first-experiment", "fxtr"]
+SKILLS_WITH_REFERENCES = {"behaviors", "fxtr"}
+
+
 def check_fxtr(plugin_dir: Path) -> None:
-    """The fxtr and behaviors skills, as fxtr3's `pnpm sync:plugin` prepares them: both, from
-    one clean revision of fxtr3, each with its references and links that resolve."""
+    """The behaviors, first-experiment, and fxtr skills, as fxtr3's `pnpm sync:plugin` prepares
+    them: all from one clean revision of fxtr3, with links that resolve. The behaviors and fxtr
+    skills each hold a copy of the pages they link; first-experiment links into those copies."""
     skills = sorted(path.name for path in (plugin_dir / "skills").iterdir() if path.is_dir())
-    if skills != ["behaviors", "fxtr"]:
-        fail(f"fxtr plugin must hold exactly the behaviors and fxtr skills, not {skills}")
+    if skills != FXTR_SKILLS:
+        fail(f"fxtr plugin must hold exactly the skills {FXTR_SKILLS}, not {skills}")
     revisions = set()
     for name in skills:
         skill_dir = plugin_dir / "skills" / name
@@ -112,7 +117,7 @@ def check_fxtr(plugin_dir: Path) -> None:
         if not skill_md.is_file() or not skill_md.read_text(encoding="utf-8").strip():
             fail(f"{name} skill needs a non-empty SKILL.md")
         references = [p for p in (skill_dir / "references").rglob("*") if p.is_file()]
-        if not references:
+        if not references and name in SKILLS_WITH_REFERENCES:
             fail(f"{name} skill has no references")
         for page in references:
             if page.suffix in {".md", ".mdx"} and not page.read_text(encoding="utf-8").strip():
@@ -135,7 +140,7 @@ def check_fxtr(plugin_dir: Path) -> None:
             if not path.is_file():
                 fail(f"{name}/SKILL.md links to a missing file: {target}")
     if len(revisions) != 1:
-        fail("the fxtr and behaviors skills must be prepared from the same fxtr3 revision")
+        fail("the fxtr plugin's skills must be prepared from the same fxtr3 revision")
 
 
 PLUGIN_CHECKS: dict[str, Callable[[Path], None]] = {

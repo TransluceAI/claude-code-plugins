@@ -24,7 +24,7 @@ its jobs as they run and after they finish.
   results, set `schema` in `fxtr.local.toml` to another name while experimenting (or run
   `fxtr init` again with the same `--database-url`, another `--schema`, and `--force`), and set it
   back for real runs.
-* Start the viewer and leave it running, so each launch opens its job in it (see
+* Start the viewer and leave it running, so each launch shows its job in it (see
   [Watch jobs in the viewer](#watch-jobs-in-the-viewer)).
 
 ## Launch from Python
@@ -74,10 +74,12 @@ if __name__ == "__main__":
     anyio.run(main)
 ```
 
-* `run_job` opens the job in a new tab of the project's running viewer (`uv run fxtr view`) and
-  prints its link before waiting, then the job's status and result; with no viewer running, it
-  prints how to start one. `open_browser=False`, or `FXTR_NO_BROWSER=1` in the environment, only
-  prints the link. It raises `JobNotFinishedError` if the job doesn't succeed.
+* `run_job` shows the job in the project's running viewer (`uv run fxtr view`) and prints its
+  link before waiting, then the job's status and result; with no viewer running, it prints how to
+  start one. The viewer's open tabs switch to the job, or a new tab opens when none is open (see
+  [Watch jobs in the viewer](#watch-jobs-in-the-viewer)). `open_browser=False`, or
+  `FXTR_NO_BROWSER=1` in the environment, only prints the link. It raises `JobNotFinishedError`
+  if the job doesn't succeed.
 * `root` is the root workflow's pathname, and so the start of every cache address in the job.
   See [Managing the step cache](../concepts/managing-the-step-cache.mdx).
 * Use `handle = await client.submit(...)` when you need the job's ID or want to control the
@@ -94,17 +96,22 @@ uv run fxtr view
 ```
 
 It selects a local port and opens the viewer in your browser; running it again while the
-project's viewer runs opens that one. The [CLI reference](../reference/cli.mdx#viewer) has its
-options. Each job you launch opens in a new tab of it, at the link the launcher prints, such as
-`http://127.0.0.1:8000/#job=<job id>`, and you can pick any of the project's jobs from the menu
-above the minimap. A job that's still running updates live.
+project's viewer runs opens another tab of that one. The [CLI reference](../reference/cli.mdx#viewer)
+has its options. Each job you launch shows up in the viewer's open tabs, at the link the launcher
+prints, such as `http://127.0.0.1:8000/#job=<job id>`; with no tab open, the launch opens one. A
+tab switches to each job you launch, and a note in its corner says why, with a button to go back.
+Once you pick a job in a tab yourself, from the menu above the minimap or by changing the link's
+`#job=`, the tab stays on it, and the note offers the new job instead. A job that's still running
+updates live.
 
 For one job, the viewer shows:
 
 * **The tree of workflow invocations.** The root workflow at the top, with each child workflow
   one level down. A mapped child appears once per key.
 * **A card for every step and child workflow** a workflow scheduled, showing its docstring, how it
-  was mapped, its progress, and its log lines. A card links to the function's code in your editor.
+  was mapped, its progress, and its log lines. A card's code chip, which names the commit the job
+  ran, opens the function's file as the job ran it in a pane, whose **Open** button opens it in your editor (choose which from its
+  menu).
 * **The arrays each operation received and produced**, as tables you can page through and slice
   by dimension. A value that references an entity is a link.
 * **Entity details**, opened from any link, in a pane you can keep alongside the trace. Hovering a
