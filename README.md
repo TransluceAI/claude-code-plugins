@@ -13,10 +13,11 @@ The docent plugin includes two skills:
 - **analysis** - Analyzing agent behavior with Docent
 - **ingestion** - Structured workflow for ingesting agent run data into Docent
 
-The fxtr plugin includes two skills, each with a copy of the documentation it links from
+The fxtr plugin includes three skills, with a copy of the documentation they link from
 [docs.transluce.ai](https://docs.transluce.ai):
 - **fxtr** - Setting up, writing, running, and viewing fxtr experiments
 - **behaviors** - Calling language models from fxtr experiments with the behaviors library
+- **first-experiment** - A guided walkthrough of a first fxtr experiment, from a question to results
 
 ## Installation
 
