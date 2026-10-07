@@ -1,0 +1,11 @@
+{
+  "skill": "first-experiment",
+  "documentation": null,
+  "packages": {
+    "fxtr": "0.0.1a2",
+    "behaviors": "0.0.1a2"
+  },
+  "revision": "81bc041101951f16dd70e69340d64e80abd34f01",
+  "modified": false,
+  "content_sha256": "1b39e083738e6d10b515568bf7912241a1874cda150eb40908b92e7927d38b5f"
+}

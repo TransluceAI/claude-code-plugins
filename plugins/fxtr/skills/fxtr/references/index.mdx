@@ -1,11 +1,27 @@
 ---
-title: "Introduction"
+title: "What is fxtr?"
 description: "fxtr is an experiment orchestration system for verifiable AI-powered analyses"
 ---
 
 fxtr (pronounced "fixture") is a framework for running experiments and data analyses with AI systems. It strives to give users (and their coding agents) full control over the core experiment design, including the *experiment logic*, *data types*, *input data*, and *presentation of results*, while solving complementary organizational and operational problems such as managing data storage, caching expensive steps, ensuring reproducibility, verifying what code was actually run, and sharing results.
 
 In short: fxtr tries to preserve the full power of coding agents and avoid restricting your experiment design, but provide enough scaffolding so that your analyses are systematic, organized, and reproducible and do not devolve into slop.
+
+<iframe className="w-full aspect-video rounded-xl" src="https://www.youtube.com/embed/AhgRj3EP6EE" title="Quickly making a bespoke &#x22;humor evaluation&#x22; with fxtr" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowFullScreen />
+
+<CardGroup cols={3}>
+  <Card title="Installation" icon="download" href="installation.mdx">
+    Install fxtr and set up your project and database.
+  </Card>
+
+  <Card title="Your first experiment" icon="flask" href="first-experiment.mdx">
+    Design and run an experiment of your own, with your coding agent as a guide.
+  </Card>
+
+  <Card title="Core concepts" icon="book" href="concepts/overview.mdx">
+    Projects, steps, workflows, jobs, arrays, and entities.
+  </Card>
+</CardGroup>
 
 ## How it Works
 
@@ -35,20 +51,6 @@ fxtr pairs with [**behaviors**](../../behaviors/references/index.mdx), a library
 provides model adapters for OpenAI and Anthropic, multi-turn conversations, retries, and
 storable conversation records.
 
-fxtr has skills for coding agents, which carry this documentation, so an agent such as Claude Code
-or Codex knows how to write steps and workflows, launch jobs, and build viewer renderers in your
-project. See [Working with a coding agent](first-experiment.mdx#working-with-a-coding-agent).
-
-<CardGroup cols={3}>
-  <Card title="Installation" icon="download" href="installation.mdx">
-    Install fxtr and set up your project and database.
-  </Card>
-
-  <Card title="Your first experiment" icon="flask" href="first-experiment.mdx">
-    Write, launch, and rerun a small experiment.
-  </Card>
-
-  <Card title="Core concepts" icon="book" href="concepts/overview.mdx">
-    Projects, steps, workflows, jobs, arrays, and entities.
-  </Card>
-</CardGroup>
+To get started, follow the [installation guide](installation.mdx) to install fxtr and set up your project and database.
+The guide also covers fxtr's [agent skills](installation.mdx#install-the-agent-skills), which let
+Claude Code set up projects and write and run experiments for you.

@@ -37,6 +37,10 @@ The viewer draws the frame. Leave out what it already gives:
   (`<Kind>Transcript</Kind>`); an invocation view starts with `InvocationHead`.
 * The top right corner of an entity's panel holds the viewer's view switcher and info button,
   faint until hovered. Keep controls out of that corner.
+* A step's pane already shows each of its input and output arrays as a table you can page
+  through and slice, with links to each entity. Don't redraw those arrays as a table. A step's
+  view earns its place by adding what that table can't: a chart, a summary across invocations,
+  or one invocation's content laid out to read.
 
 ## The look
 
@@ -304,18 +308,16 @@ export function ReportPanel({ id, storage }: EntityPanelProps) {
 
 ## Check it
 
-Save, let the running `uv run fxtr view` rebuild the bundle (the open viewer updates in place; see
-[Building and reloading](../reference/renderers.mdx#building-and-reloading)), and look at the view:
-
-* in both themes (the theme toggle at the foot of the viewer's left rail);
-* as the results overview at full width, in a pane dragged narrow, and in a card's preview (close
-  every pane to see the previews);
-* with the keyboard: Tab reaches every mark and control, Enter presses, the tooltip follows focus;
-* pressing a mark opens its entity in a pane, and the mark then wears the ink ring.
-
-And search the package for what the viewer never uses; each of these should find nothing:
+Save, and let the running `uv run fxtr view` rebuild the bundle (the open viewer updates in place),
+or build it with `uv run fxtr views build`, which prints why a build failed
+([Building and reloading](../reference/renderers.mdx#building-and-reloading)). Then search the
+package for what the viewer never uses; each of these should find nothing:
 
 ```bash
 grep -rnE '#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(' views/src
 grep -rnE 'font-family: *[^v ]|font-size: *[0-9]|color-scheme|!important|<title>' views/src
 ```
+
+The rest is a look at the view in the viewer. The usual things to catch are a theme it reads badly
+in (the toggle is at the foot of the viewer's left rail) and a width it breaks at: drag a pane
+narrow, or close every pane to see the card previews.

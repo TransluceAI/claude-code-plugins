@@ -1,250 +1,1026 @@
 ---
 title: "Your first experiment"
-description: "Write a small experiment with a mapped step and a reduction, launch it, and see how caching works."
+description: "Design, build, run, and change your first fxtr experiment: a small evaluation of how language models behave."
 ---
 
-This tutorial starts with an empty project and builds an experiment that counts the words in
-each prompt in a dataset, then averages the counts. There are no model calls. It has the same
-shape as many experiments: a step mapped over a dataset, followed by a step that reduces the
-results.
+This guide walks you through a first experiment in fxtr: a small evaluation of how language
+models behave. You'll design the experiment, write its code, run a small pilot, look at the
+results in the viewer, and then grow it. Along the way you'll meet the main ideas in fxtr:
+entities, steps, workflows, arrays, and the step cache.
 
-This assumes you have completed [Installation](installation.mdx) and have a database running.
+The example experiment in this guide evaluates language models writing jokes, but you can study anything you'd like!
 
-## Create a project and connect it to the database
+<Tip>
+  We strongly recommend walking through this experience interactively with an AI agent. To try it out, invoke the `first-experiment` skill:
 
-Create a new project in a new or empty directory. Use your existing database's URL; the command
-below uses the local database from the installation guide:
+  <Tabs>
+    <Tab title="Claude Code">
+      From a terminal, if you haven't already:
+
+      ```bash
+      claude plugin marketplace add TransluceAI/claude-code-plugins
+      claude plugin install fxtr@transluce-plugins
+      ```
+
+      Then, in Claude Code:
+
+      ```text
+      /fxtr:first-experiment
+      ```
+    </Tab>
+
+    <Tab title="Codex">
+      From a terminal, if you haven't already:
+
+      ```bash
+      codex plugin marketplace add TransluceAI/codex-plugins
+      codex plugin add fxtr@transluce-plugins
+      ```
+
+      Then, in Codex:
+
+      ```text
+      $fxtr:first-experiment
+      ```
+    </Tab>
+  </Tabs>
+</Tip>
+
+## 1. Check your setup
+
+Before you start, complete [Installation](installation.mdx), and check that you have:
+
+* **The tools**: uv, Docker (or another Postgres server), Node, pnpm, and git, at the versions
+  [Installation](installation.mdx#prerequisites) lists. Check with `uv --version`,
+  `node --version`, and `pnpm --version`.
+* **A running Postgres server**: `docker ps` lists the `fxtr-postgres` container from
+  [Start Postgres](installation.mdx#start-postgres). If it's stopped, run
+  `docker start fxtr-postgres`.
+* **An API key** for each model provider you'll call: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or
+  both. The running example uses Anthropic models, but its code pairs every model with its
+  provider, so switching to OpenAI or mixing the two is a change to a few lines (see
+  [Write the launcher](#write-the-launcher)). For other providers, see
+  [OpenRouter](../../behaviors/references/guides/choosing-models.mdx#openrouter).
+
+## 2. Design your experiment
+
+For your first experiment in fxtr, you can start with a question about how models behave, such as:
+
+* Do models keep a correct answer when the user pushes back?
+* How does the wording of a system prompt change how a model responds?
+* What do models make when asked to draw or describe themselves?
+
+A good first question needs no external data, compares a few conditions (often a few models),
+and can be measured from the conversations themselves. Once you have one, decide:
+
+1. **What you're comparing.** Usually this is models, but it could be system prompts or other
+   settings. Pick at least two conditions you expect to differ.
+2. **What you're sweeping over.** One prompt tells you little about a model in general, so
+   measure the behavior across several variations, such as topics, phrasings, or tasks, and take
+   several samples of each.
+3. **How you generate a transcript.** Often one turn of conversation with a fixed prompt is
+   enough. More involved experiments use several turns or tools.
+4. **What you measure.** A pure function of the transcript, such as its length or whether an
+   answer is correct, or more often a judge model that follows a rubric. Have the judge explain
+   its reasoning before it gives a score or a label.
+5. **How you summarize.** For example, a mean score or the share of each label per condition.
+
+You should generally start small: a few conditions, a handful of items, and one measurement. Once you have something simple working, you can scale it out.
+
+### The running example
+
+The rest of this guide follows one question: *which language models write the funniest jokes?*
+Its design:
+
+```text
+Question:     which models write the funniest jokes?
+Compare:      model: Haiku 4.5, Sonnet 5.5
+Sweep over:   topic: 10 everyday topics (coffee, dentists, printers, ...)
+              sample: several jokes per model and topic
+Conversation: one user message asking for a joke about the topic
+Measurement:  a judge model (Opus 5.5) rates each joke from 1 to 10, with a rationale
+Summary:      the mean score per model
+Size:         pilot 2 models x 3 topics x 1 sample  =  6 jokes,  6 judge calls
+              full  2 models x 10 topics x 3 samples = 60 jokes, 60 judge calls
+```
+
+### From design to code
+
+Each part of a design becomes a piece of fxtr code:
+
+* **Entities**: Data records that represent objects in your program, such as configuration
+  objects, measurement results, or a report that collects the final results. Each entity
+  type has a unique type ID, which fxtr uses to visualize it.
+* **Steps**: The functions that do the work. For our joke evaluation: `tell_joke` asks one model for one joke,
+  `grade_joke` grades one joke, and `summarize` averages one model's grades.
+* **Arrays** hold many values indexed by named **dimensions**, including the variables you are comparing and those you are sweeping over. Each step is *mapped* over some of them to run computations in parallel. For instance, in the joke evaluation, `model`,
+  `topic`, and `sample` are dimensions, and fxtr calls `tell_joke` once per model, topic, and
+  sample.
+* A **workflow** connects the steps, and a **launcher** script supplies its inputs and runs it
+  as a **job**.
+
+You can read more about these pieces in [Core concepts](concepts/overview.mdx).
+
+## 3. Set up the project
+
+Create a project and install its dependencies. The commands below use the name
+`joke-eval` (feel free to substitute your own).
 
 ```bash
-uvx fxtr new ~/code/my-project
-cd ~/code/my-project
+uvx fxtr new ~/fxtr/joke-eval
+cd ~/fxtr/joke-eval
 uv sync
+uv add "behaviors[models]"
 (cd views && pnpm install)
+```
+
+`fxtr new` writes an empty project and makes it a git repository.
+[behaviors](../../behaviors/references/index.mdx) is our library for calling language models in fxtr, which your steps can use.
+
+Next, connect the project to your database:
+
+```bash
 uv run fxtr init --database-url postgresql+asyncpg://fxtr:fxtr@localhost:55433/fxtr
 ```
 
-`fxtr new` creates an empty Python package under `src/my_project/`, project configuration, and
-an empty renderer bundle, and initializes git. `uv sync` installs the project's Python
-dependencies. There is no experiment or launcher yet; you will write both below.
-The `pnpm install` command installs dependencies for the project's renderer bundle; commit its
-lockfile with your experiment.
+Then add your keys to the project's `.env`, which is gitignored:
 
-`fxtr init` writes the database connection to `fxtr.local.toml` and creates the project's
-tables. That file is gitignored because the connection is specific to this machine. Run the
-remaining commands from the new project directory.
-
-## Write the experiment
-
-Create `src/my_project/word_count.py`:
-
-```python src/my_project/word_count.py
-from typing import Annotated
-
-from fxtr.entity_defns.array import Array
-from fxtr.experiment.handles import ArrayHandle
-from fxtr.experiment.steps import StepContext, step
-from fxtr.experiment.workflows import WorkflowContext, workflow
-
-
-@step(name="word_count.count")
-async def count_words(context: StepContext, prompt: str) -> int:
-    """Count the whitespace-separated words in a prompt."""
-    return len(prompt.split())
-
-
-@step(name="word_count.mean")
-async def mean_length(
-    context: StepContext,
-    counts: Annotated[Array[int], "[prompt: str]"],
-) -> float:
-    """Average the word counts across prompts."""
-    values = list(counts.values())
-    return sum(values) / len(values)
-
-
-@workflow(name="word_count.experiment")
-async def experiment(
-    context: WorkflowContext,
-    prompts: Annotated[ArrayHandle[str], "[prompt: str]"],
-) -> Annotated[ArrayHandle[float], "[]"]:
-    """Measure the length of each prompt, then average the lengths."""
-    counts = context.run_step("count_words", count_words, {"prompt": prompts}, map_over=["prompt"])
-    return context.run_step("mean_length", mean_length, {"counts": counts})
+```bash .env
+ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-In this code:
+The project now holds:
 
-* `count_words` takes one prompt and returns one number. `mean_length` takes a whole array of
-  counts, indexed by the `prompt` dimension, and returns one number.
-* `run_step` schedules a step and returns a *handle* to its future result without waiting for
-  it. Passing `counts` to the second step makes it depend on the first.
-* `map_over=["prompt"]` calls `count_words` once per prompt and stacks the results into an array
-  with the same `prompt` dimension. The second `run_step` has no `map_over`, so `mean_length`
-  runs once on the whole array.
-* A plain `str` or `int` annotation means a single value. `Annotated[..., "[prompt: str]"]` also
-  names the array's dimensions, which a Python type can't express.
-* Each docstring appears on its step's or workflow's card in the viewer.
+```text
+pyproject.toml        the project, and [tool.fxtr]: the modules that define its steps and workflows
+.env                  API keys, read into the environment of each launch; never committed
+fxtr.local.toml       where this machine reaches the database; never committed
+src/joke_eval/        the Python package your experiment goes in (named after the project)
+views/                renderers that customize how the viewer shows your data
+```
 
-Then register the module in `pyproject.toml`, so that fxtr can find the experiment by name when
-it resumes a job or shows it in the viewer:
+See [Project configuration](reference/project-configuration.mdx) for more details on the project structure.
+
+Next, make an initial commit:
+
+```bash
+git add . && git commit -m "A new fxtr project"
+```
+
+## 4. Write the experiment
+
+Experiments in fxtr generally consist of at least two files:
+
+* the *experiment module*, a library that defines the main experiment workflow and other core components,
+* the *launcher*, which specifies what the experiment runs on and is responsible for launching it in fxtr.
+
+If you want to get started immediately, you can skip ahead to the complete
+[experiment module](#put-it-all-together-into-an-experiment-module) and
+[launcher](#write-the-launcher) for the joke eval. Below we'll walk you through the pieces and
+what they mean.
+
+### Define the entities
+
+An entity is a frozen dataclass that fxtr can store and show in the viewer. Each gets a type name
+of its own. You'll usually want:
+
+* a **configuration** for each kind of model call, holding every setting that affects its output,
+  so the results always point at the exact settings that produced them;
+* a **measurement** entity, such as a grade or a verdict, with the judge's rationale and its full
+  reply;
+* a **report** that references everything the experiment produced, so the launcher, and later a
+  results view, can find it all from one place.
+
+You can also use existing entities like `ChatRollout` from `behaviors`.
+
+Here's an example configuration entity for how to generate a joke from a topic:
+
+```python
+@dataclass(frozen=True)
+class GenerationConfig(DataclassEntity, fxtr_type="local.joke_eval.GenerationConfig.v1"):
+    """A model asked for jokes, and the prompt it is asked with."""
+
+    provider: Provider
+    model_name: str
+    sampling: SamplingParams
+    prompt_template: str  # formatted with {topic}
+```
+
+You can expand below to see the other types we'll need:
+
+<Accordion title="The other entity types">
+  ```python
+  @dataclass(frozen=True)
+  class JudgeConfig(DataclassEntity, fxtr_type="local.joke_eval.JudgeConfig.v1"):
+      """A judge model and the rubric it grades jokes with."""
+
+      provider: Provider
+      model_name: str
+      sampling: SamplingParams
+      rubric: str  # formatted with {topic} and {joke}
+
+
+  @dataclass(frozen=True)
+  class JokeGrade(DataclassEntity, fxtr_type="local.joke_eval.JokeGrade.v1"):
+      """The judge's grade of one joke."""
+
+      topic: str
+      joke: str
+      score: int | None  # 1 to 10; None when there was no joke or the reply had no valid score
+      rationale: str
+      judge_reply: str
+
+
+  class ModelSummary(TypedDict):
+      """How one model's jokes were graded. A TypedDict isn't an entity: it's stored inline, as a
+      value in an array."""
+
+      jokes: int
+      graded: int
+      mean_score: float | None
+
+
+  @dataclass(frozen=True)
+  class JokeReport(DataclassEntity, fxtr_type="local.joke_eval.JokeReport.v1"):
+      """Everything the evaluation produced. Each field references a stored array; the comments
+      give each array's dimensions."""
+
+      jokes: BoundID[Array[BoundID[ChatRollout]]]  # [model, topic, sample]
+      grades: BoundID[Array[BoundID[JokeGrade]]]  # [model, topic, sample]
+      summary: BoundID[Array[ModelSummary]]  # [model]
+  ```
+</Accordion>
+
+See [Entities and custom types](concepts/entities-and-custom-types.mdx) for info on how to
+define entities.
+
+### Write the steps
+
+A step is an async function decorated with `@step`. fxtr stores each call's result in its
+**cache**, and reuses it when the same call comes up again. Write one step per call you'd make by
+hand: one conversation, one judgment, one summary. fxtr handles running them many times.
+
+For our joke evaluation, we can use three steps:
+
+* `tell_joke(config, topic)` formats the prompt and holds a one-turn conversation with
+  `run_chat_rollout`. It returns the `ChatRollout`, a behaviors entity holding the whole
+  conversation.
+* `grade_joke(judge, topic, rollout)` takes the joke's text from the rollout, sends the rubric to
+  the judge, and reads the `<score>` and `<rationale>` tags from its reply. A missing joke or an
+  unreadable score is recorded as a grade with no score. A failed model call raises, so that
+  fxtr retries it when you resume the job.
+* `summarize(grades)` receives one model's grades, as an array over `topic` and `sample`, and
+  averages their scores.
+
+Here's the step that generates a joke:
+
+<Accordion title="The tell_joke step">
+  ```python
+  @step(name="joke_eval.tell_joke")
+  async def tell_joke(context: StepContext, config: GenerationConfig, topic: str) -> ChatRollout:
+      """Ask a model for a joke about the topic."""
+      prompt = config.prompt_template.format(topic=topic)
+      api = make_api(config.provider, config.model_name)
+      try:
+          # The model to talk to, which retries rate limits and server errors.
+          model = chat_session_model_from_api(api, config.sampling, retry=RetryConfig())
+          # The user's side of the conversation: one scripted message.
+          user = ScriptedUserSimulator(messages=(UserMessage(content=(ContentText(text=prompt),)),))
+          policy = context_policy_from_user_simulator(user, initialization=None)
+          # Run the conversation. One more turn than there are scripted messages, so the rollout
+          # can end as completed. The returned ChatRollout is an entity, so fxtr stores it.
+          return await run_chat_rollout(model, policy, max_turns=2)
+      finally:
+          with anyio.CancelScope(shield=True):
+              await api.aclose()
+  ```
+</Accordion>
+
+The behaviors guide [Calling language models](../../behaviors/references/guides/language-models.mdx) explains some
+common conversation and judge patterns.
+
+### Connect them in a workflow
+
+The workflow function defines the overall structure of your experiment. Instead of running steps
+directly, it schedules them using `run_step`, and defines both the inputs that each step should
+receive and also the dimensions that the steps should be mapped over.
+
+Our joke evaluation can be defined using the following workflow:
+
+```python
+@workflow(name="joke_eval.evaluate")
+async def evaluate(
+    context: WorkflowContext,
+    # The inputs the launcher supplies, with their dimensions: a configuration per model, the
+    # topics, and one judge configuration with no dimensions.
+    models: Annotated[ArrayHandle[BoundID[GenerationConfig]], "[model: str]"],
+    topics: Annotated[ArrayHandle[str], "[topic: str]"],
+    judge: ScalarHandle[BoundID[JudgeConfig]],
+    samples: int,
+) -> JokeReport:
+    """Have each model write jokes about each topic, grade them, and summarize each model."""
+    # One call per model and topic, repeated `samples` times along a new `sample` dimension.
+    # The result is indexed by [model, topic, sample].
+    jokes = context.run_step(
+        "tell_jokes",
+        tell_joke,
+        {"config": models, "topic": topics},
+        map_over=["model", "topic"],
+        replicas={"sample": range(samples)},
+    )
+    # One call per joke. The judge goes to every call, and each call gets its joke's topic.
+    grades = context.run_step(
+        "grade_jokes",
+        grade_joke,
+        {"judge": judge, "topic": topics, "rollout": jokes},
+        map_over=["model", "topic", "sample"],
+    )
+    # One call per model, which receives that model's grades over [topic, sample].
+    summary = context.run_step("summarize", summarize, {"grades": grades}, map_over=["model"])
+    # Wait for the results (`observe`), store each array, and return a report that references
+    # them.
+    return JokeReport(
+        jokes=await context.store(await jokes.observe()),
+        grades=await context.store(await grades.observe()),
+        summary=await context.store(await summary.observe()),
+    )
+```
+
+* `tell_jokes` is mapped over `model` and `topic`, and `replicas` adds a `sample` dimension, so
+  its result is an array of rollouts indexed by `[model, topic, sample]`.
+* `grade_jokes` is mapped over all three. The judge, which has no dimensions, goes to every call,
+  and each call gets the topic matching its joke.
+* `summarize` is mapped over `model` only, so each call receives one model's grades over the
+  remaining dimensions, `[topic, sample]`.
+
+[Arrays and parallel computations](concepts/arrays-and-parallel-computations.mdx) explains
+mapping in depth, and [Workflows and steps](concepts/workflows-and-steps.mdx) explains how
+workflows run.
+
+### Put it all together into an experiment module
+
+For this experiment, we can put the entity types, steps, and workflow function into a single
+experiment module. Here's what it looks like for the joke evaluation:
+
+<Accordion title="src/joke_eval/experiment.py">
+  ```python src/joke_eval/experiment.py
+  """A joke evaluation: models write jokes about topics, and a judge model grades each joke.
+
+  This module defines the experiment's entity types, its steps, and the workflow that connects them.
+  It is listed in `[tool.fxtr] modules` in pyproject.toml, so fxtr imports it to find the steps and
+  the workflow when it resumes a job or shows one in the viewer.
+  """
+
+  import re
+  from dataclasses import dataclass
+  from typing import Annotated, Literal, TypedDict
+
+  import anyio
+
+  from behaviors.implementations.context_policies import (
+      ScriptedUserSimulator,
+      context_policy_from_user_simulator,
+  )
+  from behaviors.implementations.models import (
+      DEFAULT_FAILURE_CATEGORIES_TO_RETRY,
+      chat_session_model_from_api,
+      generate_with_retries,
+  )
+  from behaviors.implementations.models.anthropic import AnthropicMessagesAPI
+  from behaviors.implementations.models.openai_responses import OpenAIResponsesAPI
+  from behaviors.rollouts.chat import run_chat_rollout
+  from behaviors.types import (
+      AssistantMessage,
+      ChatMessage,
+      ChatRollout,
+      ContentText,
+      ModelCallFailure,
+      ModelRequest,
+      RetryConfig,
+      RolloutCompleted,
+      SamplingParams,
+      UserMessage,
+  )
+  from fxtr.core.entities import BoundID
+  from fxtr.entity_defns.array import Array
+  from fxtr.entity_defns.dataclass_entity import DataclassEntity
+  from fxtr.experiment.handles import ArrayHandle, ScalarHandle
+  from fxtr.experiment.steps import StepContext, step
+  from fxtr.experiment.workflows import WorkflowContext, workflow
+
+  Provider = Literal["anthropic", "openai"]
+
+
+  def make_api(provider: Provider, model_name: str) -> AnthropicMessagesAPI | OpenAIResponsesAPI:
+      """A client for the provider's API. Both steps build their clients here, so a test can
+      replace this one function with a fake model."""
+      if provider == "anthropic":
+          return AnthropicMessagesAPI(model_name)
+      return OpenAIResponsesAPI(model_name)
+
+
+  def answer_text(messages: tuple[ChatMessage, ...]) -> str:
+      """The assistant's text, without reasoning or tool-use blocks."""
+      return "".join(
+          block.text
+          for message in messages
+          if isinstance(message, AssistantMessage)
+          for block in message.content
+          if isinstance(block, ContentText)
+      )
+
+
+  # --- Entities ------------------------------------------------------------------------------------
+  #
+  # An entity is a record that fxtr stores in its database and can show in the viewer. A frozen
+  # dataclass becomes one by subclassing DataclassEntity, with a type ID (`fxtr_type`) that names it
+  # uniquely. A `BoundID[T]` field is a reference to another stored entity of type T.
+
+
+  @dataclass(frozen=True)
+  class GenerationConfig(DataclassEntity, fxtr_type="local.joke_eval.GenerationConfig.v1"):
+      """A model asked for jokes, and the prompt it is asked with."""
+
+      provider: Provider
+      model_name: str
+      sampling: SamplingParams
+      prompt_template: str  # formatted with {topic}
+
+
+  @dataclass(frozen=True)
+  class JudgeConfig(DataclassEntity, fxtr_type="local.joke_eval.JudgeConfig.v1"):
+      """A judge model and the rubric it grades jokes with."""
+
+      provider: Provider
+      model_name: str
+      sampling: SamplingParams
+      rubric: str  # formatted with {topic} and {joke}
+
+
+  @dataclass(frozen=True)
+  class JokeGrade(DataclassEntity, fxtr_type="local.joke_eval.JokeGrade.v1"):
+      """The judge's grade of one joke."""
+
+      topic: str
+      joke: str
+      score: int | None  # 1 to 10; None when there was no joke or the reply had no valid score
+      rationale: str
+      judge_reply: str
+
+
+  class ModelSummary(TypedDict):
+      """How one model's jokes were graded. A TypedDict isn't an entity: it's stored inline, as a
+      value in an array."""
+
+      jokes: int
+      graded: int
+      mean_score: float | None
+
+
+  @dataclass(frozen=True)
+  class JokeReport(DataclassEntity, fxtr_type="local.joke_eval.JokeReport.v1"):
+      """Everything the evaluation produced. Each field references a stored array; the comments
+      give each array's dimensions."""
+
+      jokes: BoundID[Array[BoundID[ChatRollout]]]  # [model, topic, sample]
+      grades: BoundID[Array[BoundID[JokeGrade]]]  # [model, topic, sample]
+      summary: BoundID[Array[ModelSummary]]  # [model]
+
+
+  # --- Steps ---------------------------------------------------------------------------------------
+  #
+  # A step is an async function that does one unit of work. `@step` registers it under a name. fxtr
+  # caches each call's result, and reuses it when the same step is called with the same inputs.
+  # An argument annotated with an entity type, such as `config: GenerationConfig`, receives the
+  # loaded entity; the `context` gives access to fxtr, such as storing and loading entities.
+
+
+  @step(name="joke_eval.tell_joke")
+  async def tell_joke(context: StepContext, config: GenerationConfig, topic: str) -> ChatRollout:
+      """Ask a model for a joke about the topic."""
+      prompt = config.prompt_template.format(topic=topic)
+      api = make_api(config.provider, config.model_name)
+      try:
+          # The model to talk to, which retries rate limits and server errors.
+          model = chat_session_model_from_api(api, config.sampling, retry=RetryConfig())
+          # The user's side of the conversation: one scripted message.
+          user = ScriptedUserSimulator(messages=(UserMessage(content=(ContentText(text=prompt),)),))
+          policy = context_policy_from_user_simulator(user, initialization=None)
+          # Run the conversation. One more turn than there are scripted messages, so the rollout
+          # can end as completed. The returned ChatRollout is an entity, so fxtr stores it.
+          return await run_chat_rollout(model, policy, max_turns=2)
+      finally:
+          with anyio.CancelScope(shield=True):
+              await api.aclose()
+
+
+  @step(name="joke_eval.grade_joke")
+  async def grade_joke(
+      context: StepContext, judge: JudgeConfig, topic: str, rollout: ChatRollout
+  ) -> JokeGrade:
+      """Grade a joke from 1 to 10."""
+      joke = ""
+      if isinstance(rollout.status, RolloutCompleted) and rollout.model_turns:
+          joke = answer_text(rollout.model_turns[-1].messages).strip()
+      if not joke:
+          # Return, rather than raise, for outcomes that a retry would reproduce: the result is
+          # cached as a grade with no score.
+          return JokeGrade(
+              topic=topic, joke="", score=None, rationale="",
+              judge_reply=f"not graded: no joke ({rollout.status.kind})",
+          )
+
+      # A judge needs no conversation, so it makes a single request.
+      request = ModelRequest(
+          context=(UserMessage(content=(ContentText(text=judge.rubric.format(topic=topic, joke=joke)),)),),
+          tools=(),
+          tool_choice=None,
+          parallel_tool_calls=None,
+          sampling=judge.sampling,
+      )
+      api = make_api(judge.provider, judge.model_name)
+      try:
+          response = await generate_with_retries(
+              api,
+              request,
+              retry=RetryConfig(),
+              failure_categories_to_retry=DEFAULT_FAILURE_CATEGORIES_TO_RETRY,
+          )
+      finally:
+          with anyio.CancelScope(shield=True):
+              await api.aclose()
+      if isinstance(response, ModelCallFailure):
+          # Raise rather than return: a returned failure would be cached as the result, while a
+          # raised one makes the job stop, and resuming it calls the judge again.
+          raise RuntimeError(f"judge call failed ({response.category}): {response.description}")
+
+      # Read the score and rationale from the reply's XML tags.
+      reply = answer_text(response.output)
+      score_match = re.search(r"<score>\s*(\d+)\s*</score>", reply)
+      score = int(score_match.group(1)) if score_match else None
+      rationale_match = re.search(r"<rationale>(.*?)</rationale>", reply, re.DOTALL)
+      # Log lines show on the step's card in the viewer.
+      context.log(f"{score}: {joke}")
+      return JokeGrade(
+          topic=topic,
+          joke=joke,
+          score=score if score is not None and 1 <= score <= 10 else None,
+          rationale=rationale_match.group(1).strip() if rationale_match else "",
+          judge_reply=reply,
+      )
+
+
+  @step(name="joke_eval.summarize")
+  async def summarize(
+      context: StepContext,
+      # An array, and the dimensions each call receives: all of one model's grades. Its values are
+      # references to the grades, which the step loads itself.
+      grades: Annotated[Array[BoundID[JokeGrade]], "[topic: str, sample: int]"],
+  ) -> ModelSummary:
+      """Average one model's scores."""
+      scores = []
+      for ref in grades.values():
+          grade = await context.load(ref)
+          if grade.score is not None:
+              scores.append(grade.score)
+      return ModelSummary(
+          jokes=len(grades),
+          graded=len(scores),
+          mean_score=sum(scores) / len(scores) if scores else None,
+      )
+
+
+  # --- Workflow ------------------------------------------------------------------------------------
+  #
+  # The workflow connects the steps. It doesn't call them directly: `context.run_step` schedules a
+  # step and returns a handle to its future results, which can be passed on to later steps. fxtr
+  # runs each step's calls in parallel, as soon as their inputs are ready.
+
+
+  @workflow(name="joke_eval.evaluate")
+  async def evaluate(
+      context: WorkflowContext,
+      # The inputs the launcher supplies, with their dimensions: a configuration per model, the
+      # topics, and one judge configuration with no dimensions.
+      models: Annotated[ArrayHandle[BoundID[GenerationConfig]], "[model: str]"],
+      topics: Annotated[ArrayHandle[str], "[topic: str]"],
+      judge: ScalarHandle[BoundID[JudgeConfig]],
+      samples: int,
+  ) -> JokeReport:
+      """Have each model write jokes about each topic, grade them, and summarize each model."""
+      # One call per model and topic, repeated `samples` times along a new `sample` dimension.
+      # The result is indexed by [model, topic, sample].
+      jokes = context.run_step(
+          "tell_jokes",
+          tell_joke,
+          {"config": models, "topic": topics},
+          map_over=["model", "topic"],
+          replicas={"sample": range(samples)},
+      )
+      # One call per joke. The judge goes to every call, and each call gets its joke's topic.
+      grades = context.run_step(
+          "grade_jokes",
+          grade_joke,
+          {"judge": judge, "topic": topics, "rollout": jokes},
+          map_over=["model", "topic", "sample"],
+      )
+      # One call per model, which receives that model's grades over [topic, sample].
+      summary = context.run_step("summarize", summarize, {"grades": grades}, map_over=["model"])
+      # Wait for the results (`observe`), store each array, and return a report that references
+      # them.
+      return JokeReport(
+          jokes=await context.store(await jokes.observe()),
+          grades=await context.store(await grades.observe()),
+          summary=await context.store(await summary.observe()),
+      )
+  ```
+</Accordion>
+
+Register your module in `pyproject.toml`, so that fxtr can find its steps and workflow when it
+resumes a job or shows one in the viewer:
 
 ```toml pyproject.toml
 [tool.fxtr]
-modules = ["my_project.word_count"]
+modules = ["joke_eval.experiment"]
 ```
 
-## Launch it
+### Write the launcher
 
-Create a launcher at the project root. It builds the input dataset and runs the workflow as a
-job:
+The launcher is a script which is responsible for configuring and launching the experiment.
+This is usually a good place to specify global configuration arguments or inputs that you want to
+run your experiment over.
 
-```python launch_word_count.py
+The simplest possible launcher is just a `main` script which connects to fxtr, stores the
+configurations, builds the workflow's inputs, and runs it. This one asks one model for one joke
+about one topic:
+
+```python launch.py
 import anyio
 
+from behaviors.types import SamplingParams
+from fxtr.core.entities import BoundID
 from fxtr.entity_defns.array import Array
 from fxtr.project.running import open_local_client, run_job
-from my_project.word_count import experiment
+from joke_eval.experiment import GenerationConfig, JudgeConfig, evaluate
 
 
 async def main() -> None:
-    prompts = Array.from_items(
-        [
-            (("greeting",), "Hello there"),
-            (("question",), "Why is the sky blue?"),
-            (("request",), "Please summarize this article in three sentences."),
-        ],
-        ("[prompt: str]", str),
-    )
     async with open_local_client(__file__) as client:
-        result = await run_job(client, experiment, {"prompts": prompts}, root="word-count-v1")
-        print(f"mean length: {result.item():.2f} words")
+        # Store the configurations, getting back references to them.
+        haiku = await client.store(GenerationConfig(
+            provider="anthropic",
+            model_name="claude-haiku-4-5-20251001",
+            sampling=SamplingParams(max_tokens=1000),
+            prompt_template='Write one original joke about "{topic}". Reply with the joke only.',
+        ))
+        judge = await client.store(JudgeConfig(
+            provider="anthropic",
+            model_name="claude-opus-5-5",
+            sampling=SamplingParams(max_tokens=1000),
+            rubric=(
+                'Rate this joke about "{topic}" from 1 to 10.\n<joke>\n{joke}\n</joke>\n'
+                "Explain your rating, then give it as <rationale>...</rationale><score>N</score>."
+            ),
+        ))
+        # Build the workflow's inputs, as arrays with named dimensions, and run it as a job.
+        inputs = {
+            "models": Array.from_items([(("haiku-4.5",), haiku)], ("[model: str]", BoundID[GenerationConfig])),
+            "topics": Array.from_items([(("coffee",), "coffee")], ("[topic: str]", str)),
+            "judge": Array.scalar(judge, BoundID[JudgeConfig]),
+            "samples": Array.scalar(1, int),
+        }
+        await run_job(client, evaluate, inputs, root="jokes-minimal")
 
 
 if __name__ == "__main__":
     anyio.run(main)
 ```
 
-`Array.from_items` takes `(key, value)` pairs and a type: here, one `prompt` dimension with string
-keys, holding string values. `root` names the job's root workflow, and, as you'll see below,
-decides which earlier results the job can reuse.
+However, you might want to expand this to include helper functions and command line flags for
+configuring the shape of your experiment. For instance, here's a more fully-featured launcher
+for the joke evaluation:
 
-Commit, then launch, with `uv run fxtr view` running in another terminal. A launch records the
-commit it runs, so it refuses uncommitted changes:
+<Accordion title="launch.py">
+  ```python launch.py
+  """Launch the joke evaluation: `uv run python launch.py pilot` or `uv run python launch.py full`."""
+
+  import sys
+  from typing import Any
+
+  import anyio
+
+  from behaviors.types import SamplingParams
+  from fxtr.core.entities import BoundID, FxtrEntityStorage
+  from fxtr.entity_defns.array import Array
+  from fxtr.project.client import JobNotFinishedError, ProjectClient
+  from fxtr.project.running import open_local_client, run_job
+  from joke_eval.experiment import GenerationConfig, JokeReport, JudgeConfig, Provider, evaluate
+
+  # The name of this run. Every cached result's address starts with it, so launching again under the
+  # same root reuses earlier results, and a new root starts fresh.
+  ROOT = "jokes-v1"
+
+  # How many topics (from the start of TOPICS) and samples per model and topic each size uses.
+  SIZES = {"pilot": (3, 1), "full": (10, 3)}
+
+  # Each model's short name (its key in the `model` dimension), provider, and model ID.
+  MODELS: dict[str, tuple[Provider, str]] = {
+      "haiku-4.5": ("anthropic", "claude-haiku-4-5-20251001"),
+      "sonnet-5.5": ("anthropic", "claude-sonnet-5-5"),
+  }
+  JUDGE: tuple[Provider, str] = ("anthropic", "claude-opus-5-5")
+
+  TOPICS = [
+      "coffee", "dentist", "printer", "penguin", "Monday",
+      "airport", "houseplant", "spreadsheet", "cat", "elevator",
+  ]
+
+  JOKE_PROMPT = (
+      'Write one original joke about "{topic}". Reply with the joke only, '
+      "with no preamble or explanation."
+  )
+
+  RUBRIC = """\
+  You are judging a joke about "{topic}". Rate how funny it is, from 1 (not funny at all) to 10 \
+  (a joke a professional comedian would be proud of). A typical competent joke is around 5. \
+  Score a well-known joke, or a stock format with the topic swapped in, low.
+
+  <joke>
+  {joke}
+  </joke>
+
+  First explain your rating in two or three sentences, then give the score, in this form:
+  <rationale>...</rationale>
+  <score>N</score>"""
+
+
+  async def build_inputs(client: ProjectClient, size: str) -> dict[str, Array[Any]]:
+      """The workflow's inputs, as arrays keyed by the names of its arguments."""
+      topic_count, samples = SIZES[size]
+
+      # Store a configuration entity per model. `client.store` returns a reference (a BoundID) to
+      # the stored entity, which is what the workflow takes.
+      models = []
+      for name, (provider, model_name) in MODELS.items():
+          config = GenerationConfig(
+              provider=provider,
+              model_name=model_name,
+              sampling=SamplingParams(max_tokens=1000),
+              prompt_template=JOKE_PROMPT,
+          )
+          models.append(((name,), await client.store(config)))
+      provider, model_name = JUDGE
+      judge = JudgeConfig(
+          provider=provider,
+          model_name=model_name,
+          sampling=SamplingParams(max_tokens=1000),
+          rubric=RUBRIC,
+      )
+
+      # `Array.from_items` builds an array from (key, value) pairs, given its dimensions and value
+      # type; `Array.scalar` builds one with no dimensions.
+      return {
+          "models": Array.from_items(models, ("[model: str]", BoundID[GenerationConfig])),
+          "topics": Array.from_items(
+              [((topic,), topic) for topic in TOPICS[:topic_count]], ("[topic: str]", str)
+          ),
+          "judge": Array.scalar(await client.store(judge), BoundID[JudgeConfig]),
+          "samples": Array.scalar(samples, int),
+      }
+
+
+  async def print_summary(storage: FxtrEntityStorage, result: Array[Any]) -> None:
+      """Print each model's mean score from the report the workflow returned."""
+      report = await storage.load(result.item(), as_type=JokeReport)
+      summary = await storage.load(report.summary)
+      for (model,), row in summary.items():
+          mean = "-" if row["mean_score"] is None else f"{row['mean_score']:.2f}"
+          print(f"{model}: mean score {mean} ({row['graded']} of {row['jokes']} jokes graded)")
+
+
+  async def main(size: str) -> None:
+      # Connect to the project's database. `max_concurrency` caps how many steps run at once.
+      async with open_local_client(__file__, max_concurrency=8) as client:
+          inputs = await build_inputs(client, size)
+          # Submit the workflow as a job, show it in the viewer, wait for it to finish, and then
+          # print the summary.
+          await run_job(client, evaluate, inputs, root=ROOT, on_result=print_summary)
+
+
+  if __name__ == "__main__":
+      if len(sys.argv) != 2 or sys.argv[1] not in SIZES:
+          sys.exit(f"usage: python launch.py {{{'|'.join(SIZES)}}}")
+      try:
+          anyio.run(main, sys.argv[1])
+      except JobNotFinishedError:
+          sys.exit(1)  # the job's status and how to resume it are already printed
+  ```
+</Accordion>
+
+### Show conversations in the viewer
+
+The viewer can show your conversations using the renderers from behaviors. Add
+`fxtr-view-behaviors` to the dependencies in `views/package.json`:
+
+```json views/package.json
+"fxtr-view-behaviors": "link:./vendor/fxtr/packages/fxtr-view-behaviors"
+```
+
+Register its renderers in `views/src/bundle.ts`:
+
+```ts views/src/bundle.ts
+import type { ViewBundle } from "fxtr-view";
+import { behaviorsRenderers } from "fxtr-view-behaviors";
+
+const bundle: ViewBundle = {
+  renderers: [...behaviorsRenderers],
+};
+
+export default bundle;
+```
+
+Then install it, rebuild, and commit everything:
 
 ```bash
-git add . && git commit -m "Add the word count experiment"
-uv run python launch_word_count.py
+(cd views && pnpm install)
+uv run fxtr views build
+git add . && git commit -m "First experiment"
 ```
 
-```text
-job 3eb75a59-911e-44af-a148-411ac5dcd8d1: running
-watch it at http://127.0.0.1:8000/#job=3eb75a59-911e-44af-a148-411ac5dcd8d1
-job 3eb75a59-911e-44af-a148-411ac5dcd8d1: succeeded
-...
-mean length: 4.67 words
-```
+<Tip>
+  Before you spend money on model calls, you can ask a coding agent to check the experiment:
+  have it run the pilot on a scratch database schema, with the function that builds model
+  clients (`make_api` in the example) replaced by a fake model. This catches mistakes in the steps,
+  the workflow, and the launcher.
+</Tip>
 
-The launch opens the job in a new tab of the viewer: the `prompts` input feeding three
-`count_words` calls, one per prompt, feeding `mean_length`.
+## 5. Run the pilot
 
-## Rerun it
-
-Launch it again, unchanged. The job succeeds straight away, because every step finds its result
-in the cache. You can see the entries with `fxtr cache list`:
-
-```text
-completed  word-count-v1/count_words[prompt:"greeting"]  (word_count.count)
-completed  word-count-v1/count_words[prompt:"question"]  (word_count.count)
-completed  word-count-v1/count_words[prompt:"request"]  (word_count.count)
-completed  word-count-v1/mean_length  (word_count.mean)
-```
-
-Each entry is at a **cache address** built from the job's `root`, the step's name in the
-workflow, and, for a mapped step, the key it was called with. A step reuses a cached result when
-its address holds a result computed from the same step and the same inputs.
-
-## Change an input
-
-Now edit the `question` prompt, commit, and launch again under the same `root`. The job stops:
-
-```text
-job 3fa3df92-2edb-4088-9e1f-a99d28b7ec77: stopped
-  reason: cache conflict at 'word-count-v1/count_words[prompt:"question"]': a different request owns the address; clear it to run this request there
-  cache conflicts at 1 address:
-    word-count-v1/count_words[prompt:"question"]  1 address  word_count.count
-  to list them:          fxtr cache list --conflicts-in 3fa3df92-2edb-4088-9e1f-a99d28b7ec77
-  to clear them:         fxtr cache clear --conflicts-in 3fa3df92-2edb-4088-9e1f-a99d28b7ec77, then fxtr resume 3fa3df92-2edb-4088-9e1f-a99d28b7ec77
-  to rerun overwriting:  fxtr resume 3fa3df92-2edb-4088-9e1f-a99d28b7ec77 --overwrite-cache-conflicts
-Traceback (most recent call last):
-  ...
-fxtr.project.client.JobNotFinishedError: Job 3fa3df92-2edb-4088-9e1f-a99d28b7ec77 is stopped
-```
-
-The address `word-count-v1/count_words[prompt:"question"]` already holds a result computed from
-the old prompt. fxtr won't reuse that result for the new prompt, and doesn't replace a completed
-result unless you ask, so this is a **cache conflict**: the step doesn't run, and the job stops
-once nothing else can. The unchanged prompts still reuse their results. `run_job` raises
-`JobNotFinishedError` for any job that doesn't succeed, so your launcher can tell.
-
-The simplest way forward is to clear exactly the conflicting entries and resume the job:
+In a second terminal, start the viewer from the project, and leave it running:
 
 ```bash
-uv run fxtr cache clear --conflicts-in 3fa3df92-2edb-4088-9e1f-a99d28b7ec77
-uv run fxtr resume 3fa3df92-2edb-4088-9e1f-a99d28b7ec77
+uv run fxtr view
 ```
 
-`count_words` runs again for the new prompt. If its new count changes the mean, the resume stops
-again, this time at `mean_length`, whose input only changed once `count_words` had rerun. Clear
-and resume once more and the job succeeds. Clearing affects later requests only: jobs that
-already finished keep the results they used.
+Next you can launch the evaluation:
 
-When you are changing data on purpose and don't need to look at each conflict first,
-`uv run fxtr resume JOB --overwrite-cache-conflicts` does the same in one go, rerunning every
-conflicting step and replacing its old result, downstream steps included. A third option is to
-launch under a new `root`, which leaves every earlier result intact.
-[Resolving a job's conflicts](concepts/managing-the-step-cache.mdx#resolving-a-jobs-conflicts)
-compares the three.
-
-<Warning>
-  Changing a step's **code** does not invalidate its cached results: the cache matches a step by
-  its name and inputs, not its implementation. After changing what a step computes, launch under
-  a new `root` or clear its entries. See
-  [Handling changes to step logic](concepts/managing-the-step-cache.mdx#handling-changes-to-step-logic).
-</Warning>
-
-## Working with a coding agent
-
-fxtr has two skills for coding agents, `fxtr` and `behaviors`, which send an agent to the pages
-of this documentation a task needs: writing steps and workflows, launching jobs, caching, calling
-models with behaviors, and building viewer renderers. So you can ask an agent for an experiment in
-plain language and review the result in the viewer. The skills carry a copy of the pages they use,
-so an agent reads them without going online.
-
-Install the fxtr plugin in Claude Code:
+```bash
+uv run python launch.py pilot
+```
 
 ```text
-/plugin marketplace add TransluceAI/claude-code-plugins
-/plugin install fxtr@transluce-plugins
+job 06bb0ae8-f73c-4995-acf3-2ab0b299b259: running
+watch it at http://127.0.0.1:8000/#job=06bb0ae8-f73c-4995-acf3-2ab0b299b259
+sent it to the viewer's open tab
+job 06bb0ae8-f73c-4995-acf3-2ab0b299b259: succeeded
+  result: bafyreicl5xf4h3itncd34nnehfpoae6hnqpcumrty7o4ffjpirgidfaray
+haiku-4.5: mean score 2.67 (3 of 3 jokes graded)
+sonnet-5.5: mean score 3.67 (3 of 3 jokes graded)
 ```
 
-The plugin has a version of its own, and Claude Code offers each new one as an update; it isn't
-tied to the fxtr your project uses. To see which documentation a copy of the skills carries, read
-the `provenance.json` beside each skill's `SKILL.md`: it names the fxtr and behaviors versions,
-the commit of the fxtr repository the copy was made from (and whether it had changes not yet
-committed), and a hash of the skill's files. The pages on this site are always the newest.
+The launcher prints the job's ID and a link, and the viewer switches to the job. It shows the
+workflow with a card for each step, which fills in as the step's calls finish.
+
+Try clicking through the results:
+
+* Open the card of the step that generates conversations (`tell_jokes`) to see its result array.
+  Each value links to a conversation.
+* Open a measurement from the judge step (`grade_jokes`) to read the judge's rationale.
+* Open the result of the summary step (`summarize`) to see the result per condition.
+
+You can use the viewer to read a few conversations and their measurements, and figure out if there is anything that you want to change in the experiment before you scale it up.
+
+## 6. Change it and run it again
+
+Whenever you launch the experiment again, fxtr reuses every cached result whose step gets the same inputs, so only
+new work costs model calls. The two most common changes to a first experiment are scaling it up
+and adding a condition.
+
+### Scale up to the full run
+
+Once the pilot looks right, you can launch the full run. For the joke evaluation, that's all 10 topics with 3
+samples each:
+
+```bash
+uv run python launch.py full
+```
+
+It reuses all of the pilot's results and computes only the new ones: in the example, the other 54
+jokes and 54 grades. Then it stops:
+
+```text
+job 4c713924-2fc5-4d9c-a55d-0ae1bdca398f: stopped
+  reason: cache conflicts at 2 addresses, such as 'jokes-v1/summarize[model:"haiku-4.5"]': different requests own them; clear them to run these requests there
+  cache conflicts at 2 addresses:
+    jokes-v1/summarize[model:*]  2 of 2 entries  joke_eval.summarize
+  to list them:          fxtr cache list --conflicts-in 4c713924-2fc5-4d9c-a55d-0ae1bdca398f
+  to clear them:         fxtr cache clear --conflicts-in 4c713924-2fc5-4d9c-a55d-0ae1bdca398f, then fxtr resume 4c713924-2fc5-4d9c-a55d-0ae1bdca398f
+  to rerun overwriting:  fxtr resume 4c713924-2fc5-4d9c-a55d-0ae1bdca398f --overwrite-cache-conflicts
+```
+
+A step that reduces over a dimension that grew, here `summarize`, now gets more inputs than in
+the pilot, at the same cache address (`jokes-v1/summarize[model:"haiku-4.5"]`). fxtr won't
+silently replace a cached result with one computed from different inputs, so it stops and reports
+a **cache conflict**. You don't need the pilot's summaries any more, so you can resume the job and
+overwrite them, using the job ID it printed:
+
+```bash
+uv run fxtr resume <job id> --overwrite-cache-conflicts
+```
+
+This reruns only the summaries. Resuming doesn't run the launcher, so launch once more to
+print the summary. Every step is now cached, so it finishes at once, with no model calls:
+
+```bash
+uv run python launch.py full
+```
+
+```text
+haiku-4.5: mean score 2.37 (30 of 30 jokes graded)
+sonnet-5.5: mean score 3.57 (30 of 30 jokes graded)
+```
+
+### Add a condition
+
+Next, you can add a condition as a new key of the dimension you compare. In the example, add Opus 5.5 to
+`MODELS` in `launch.py`:
+
+```python
+MODELS: dict[str, tuple[Provider, str]] = {
+    "haiku-4.5": ("anthropic", "claude-haiku-4-5-20251001"),
+    "sonnet-5.5": ("anthropic", "claude-sonnet-5-5"),
+    "opus-5.5": ("anthropic", "claude-opus-5-5"),
+}
+```
+
+Commit and launch the full run again. fxtr computes the new key's conversations, measurements,
+and summary at new addresses, and reuses everything else. This time nothing conflicts, because no
+step reduces over `model`:
+
+```bash
+git commit -am "Add Opus 5.5"
+uv run python launch.py full
+```
+
+```text
+haiku-4.5: mean score 2.37 (30 of 30 jokes graded)
+opus-5.5: mean score 4.63 (30 of 30 jokes graded)
+sonnet-5.5: mean score 3.57 (30 of 30 jokes graded)
+```
+
+### What a change reuses
+
+| Change                                           | What happens on the next launch                                                                                                                                                                                                       |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Add a condition, such as a model                 | Computes only the new condition's results. A step that reduces over that dimension, if any, conflicts.                                                                                                                                |
+| Add items or samples                             | Computes only the new conversations and measurements. A step that reduces over them, like `summarize`, conflicts.                                                                                                                     |
+| Edit a prompt, the rubric, or a sampling setting | The steps that get it have new inputs at the same addresses, and conflict. To keep the old results for comparison, add the change as a new condition, such as a second model entry with another prompt, or launch under a new `ROOT`. |
+| Add a step at the end of the workflow            | Reuses every earlier step, and runs only the new one.                                                                                                                                                                                 |
+| Change a step's code                             | Reuses the old results: the cache only sees a step's inputs, not its code. Clear that step's results to recompute them.                                                                                                               |
+
+[Managing the step cache](concepts/managing-the-step-cache.mdx) explains how each of these
+works, and the ways to resolve a conflict.
+
+### Build a results view
+
+The viewer's default views show every array and entity, but you can customize the view to show a more informative view of the data. With the fxtr skills
+[installed](installation.mdx#install-the-agent-skills), try asking your coding agent for one,
+describing what you want to see. For the example:
+
+```text
+Use the /fxtr skill to add renderers for this project's entities and step panels, and a
+results overview for joke_eval.evaluate that compares the models' mean scores and lets me browse
+the best and worst jokes for each model.
+```
+
+[Visualization and custom renderers](concepts/visualization-and-custom-renderers.mdx) explains
+how views work.
 
 ## Next steps
 
-<CardGroup cols={3}>
-  <Card title="Workflows and steps" icon="sitemap" href="concepts/workflows-and-steps.mdx">
-    The rules workflows and steps follow, and why they are separate.
+You've built, run, and changed your first experiment. From here, you could:
+
+* Refine the rubric, or add a second judge to see whether the judges agree (in the example,
+  whether Opus favors its own jokes).
+* Study a follow-up question about something you noticed in the conversations.
+* Start an experiment on another question, by hand or with the `first-experiment` skill.
+
+To learn more about the ideas in this guide:
+
+<CardGroup cols={2}>
+  <Card title="Core concepts" icon="book" href="concepts/overview.mdx">
+    How projects, steps, workflows, jobs, and arrays fit together.
   </Card>
 
-  <Card title="Arrays and parallel computations" icon="table-cells" href="concepts/arrays-and-parallel-computations.mdx">
-    Sweep over models, prompts, and samples, and reduce over any dimension.
+  <Card title="Arrays and parallel computations" icon="table" href="concepts/arrays-and-parallel-computations.mdx">
+    Dimensions, mapping steps over arrays, and replicas.
+  </Card>
+
+  <Card title="Managing the step cache" icon="database" href="concepts/managing-the-step-cache.mdx">
+    What a launch reuses, when it stops on a conflict, and how to resolve one.
   </Card>
 
   <Card title="Calling language models" icon="comments" href="../../behaviors/references/guides/language-models.mdx">
-    Use behaviors to hold conversations and judge outputs in your steps.
+    Conversations, judges, and summaries in fxtr steps.
   </Card>
 </CardGroup>

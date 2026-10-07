@@ -6,7 +6,7 @@ in the order of the site's navigation.
 
 ## Get started
 
-- [Introduction](index.mdx): Primitives for evaluating AI model behavior.
+- [What is the behaviors library?](index.mdx): Primitives for evaluating AI model behavior.
 
 ## Other pages
 
