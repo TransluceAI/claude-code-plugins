@@ -55,10 +55,19 @@ tools offered only at some turns), write the policy as an async generator: each 
 next context turn, and the model's reply comes back as the value of the `yield`:
 
 ```python
+from dataclasses import dataclass
+
 from behaviors.implementations.context_policies import (
     ContextPolicyGenerator, context_policy_from_generator,
 )
-from behaviors.types import ContentText, ContextTurn, EndRollout, UserMessage
+from behaviors.types import ContentText, ContextTurn, DynamicData, EndRollout, UserMessage
+from fxtr.entity_defns.dataclass_bases import TaggedDataclass
+
+
+@dataclass(frozen=True)
+class ReplyReceived(TaggedDataclass, fxtr_type="org.example.my_experiment.ReplyReceived.v1"):
+    received: bool
+
 
 async def turns() -> ContextPolicyGenerator:
     reply = yield ContextTurn(
@@ -66,13 +75,16 @@ async def turns() -> ContextPolicyGenerator:
         available_tools=None,
     )
     # Inspect reply.messages here to choose a data-dependent next turn if needed.
-    yield EndRollout(metadata={"received_reply": reply is not None})
+    outcome = ReplyReceived(received=reply is not None)
+    yield EndRollout(metadata=(DynamicData.from_tagged(outcome),))
 
 policy = context_policy_from_generator(turns, initialization=None)
 ```
 
 Pass the generator function (`turns`), not a running generator: each rollout starts its own.
 Yield `EndRollout` explicitly to finish, since a generator that simply returns raises an error.
+Its `metadata`, like a turn's, holds tagged records (see
+[Metadata](conversation-records.mdx#metadata)).
 For a reusable policy with settings of its own, subclass `GeneratorContextPolicy`, overriding
 `generate_turns`, and `generate_initialization` if its sessions need one.
 

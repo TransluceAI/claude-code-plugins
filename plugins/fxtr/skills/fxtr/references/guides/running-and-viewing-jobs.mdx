@@ -42,12 +42,12 @@ if __name__ == "__main__":
         [(("greeting",), "Hello there"), (("question",), "Why?")],
         ("[prompt: str]", str),
     )
-    launch_cli(experiment, {"prompts": prompts}, anchor=__file__, max_concurrency=8)
+    launch_cli(experiment, {"prompts": prompts}, anchor=__file__, max_concurrency=64)
 ```
 
 `anchor=__file__` tells fxtr which project the launcher belongs to. `max_concurrency` caps how
-many steps run at once; workflow functions don't count against it. If the job doesn't succeed,
-`launch_cli` exits with status 1.
+many steps run at once (see [Choose how many steps run at once](#choose-how-many-steps-run-at-once)).
+If the job doesn't succeed, `launch_cli` exits with status 1.
 
 For more control, such as choosing the `root`, loading datasets, or reading results, write an
 async launcher with `open_local_client` and `run_job`:
@@ -65,7 +65,7 @@ async def main() -> None:
         [(("greeting",), "Hello there"), (("question",), "Why?")],
         ("[prompt: str]", str),
     )
-    async with open_local_client(__file__, max_concurrency=8) as client:
+    async with open_local_client(__file__, max_concurrency=64) as client:
         result = await run_job(client, experiment, {"prompts": prompts}, root="word-count-v1")
         print(list(result.items()))
 
@@ -86,6 +86,11 @@ if __name__ == "__main__":
   waiting yourself; `await wait_for_job(client, handle)` provides the same reporting as
   `run_job`.
 * In a notebook, call `await main()` instead of `anyio.run(main)`.
+
+## Choose how many steps run at once
+
+`max_concurrency`, on `launch_cli` and `open_local_client`, caps how many of a job's steps run at
+once. Note that all jobs run on a single event loop, so CPU-bound work will probably need a lower concurrency limit.
 
 ## Watch jobs in the viewer
 
