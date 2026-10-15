@@ -2,10 +2,10 @@
   "skill": "behaviors",
   "documentation": "https://docs.transluce.ai/behaviors",
   "packages": {
-    "fxtr": "0.0.1a2",
-    "behaviors": "0.0.1a2"
+    "fxtr": "0.0.1a4",
+    "behaviors": "0.0.1a3"
   },
-  "revision": "81bc041101951f16dd70e69340d64e80abd34f01",
+  "revision": "051a5d3ab1f6df872092af2365b34c5d0f6671d3",
   "modified": false,
-  "content_sha256": "de0ca958d570464776b006b595d0f26b7be280a6c5baf88c46629d2982757eee"
+  "content_sha256": "9ca8c278e92e77f29f281313b17717930e6ecc67e13027fedde3152fc37ea5b9"
 }

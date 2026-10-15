@@ -16,23 +16,89 @@ answer's text alone, keep the `ContentText` blocks of the turn's `AssistantMessa
 [judge step's](language-models.mdx#a-judge-step) `answer_text` does, and keep the
 structured rollout for later inspection.
 
-A model turn made by an API-backed session records the provider's response in
-`ModelTurn.metadata["response"]`, as JSON, including its stop reason and usage. Metadata is defined
-by whatever produced the turn, so validate it before scoring with it.
+## Metadata
+
+Turns (`ContextTurn`, `ModelTurn`, `UserTurn`, `ToolTurn`), `EndRollout`, and `ChatRollout` carry
+`metadata`: a tuple of `DynamicData` entries, each holding one
+[tagged dataclass](../../../fxtr/references/concepts/entities-and-custom-types.mdx#inline-tagged-unions) in its stored
+form. Whatever produced the turn decides which types it records, so a reader names the type it
+expects. `find_metadata(metadata, SomeType)` returns the first entry of that type, decoded, or
+`None` if there is none; `entry.try_as_type(SomeType)` does the same for a single entry. An entry
+tagged with the type but holding fields that don't match it raises `ConversionError`.
+
+A model turn made by an API-backed session records the provider's response as a `ModelResponse`,
+including its stop reason and usage:
+
+```python
+from behaviors.types import ModelResponse, find_metadata
+
+response = find_metadata(model_turn.metadata, ModelResponse)
+if response is not None:
+    print(response.stop_reason.type, response.usage.output_tokens)
+```
+
+To record something of your own, such as which question a context turn asked, define a frozen
+tagged dataclass with a type ID in a domain you control, and wrap each value with
+`DynamicData.from_tagged`:
+
+```python
+from dataclasses import dataclass
+
+from behaviors.types import ContentText, ContextTurn, DynamicData, UserMessage, find_metadata
+from fxtr.entity_defns.dataclass_bases import TaggedDataclass
+
+
+@dataclass(frozen=True)
+class QuestionIndex(TaggedDataclass, fxtr_type="org.example.my_experiment.QuestionIndex.v1"):
+    index: int
+
+
+turn = ContextTurn(
+    messages=(UserMessage(content=(ContentText(text="What is 2 + 2?"),)),),
+    available_tools=None,
+    metadata=(DynamicData.from_tagged(QuestionIndex(index=0)),),
+)
+assert find_metadata(turn.metadata, QuestionIndex) == QuestionIndex(index=0)
+```
+
+Add an entry to existing metadata with `turn.metadata + (DynamicData.from_tagged(value),)`.
+`Transcript`, `TranscriptGroup`, and `AgentRun` metadata is different: it is a JSON object with
+string keys, matching [Docent](docent-readings.mdx)'s metadata.
 
 ## Storing records
 
 `ChatRollout`, `Transcript`, `TranscriptGroup`, `AgentRun`, and the concrete session
 initializations, such as `SetSystemMessage`, are fxtr entities, with type IDs of the form
-`org.transluce.behaviors.<Class>.v1`. A step that returns a `ChatRollout` has it stored like any
-other entity (see [Entities and custom types](../../../fxtr/references/concepts/entities-and-custom-types.mdx)), and
+`org.transluce.behaviors.<Class>.v<N>`, such as `org.transluce.behaviors.ChatRollout.v2`. A
+version is bumped when a type's stored shape changes, and a record stored under an earlier version
+doesn't load as the current type. Versions are per type: `ChatRollout` and its turns use `.v2`,
+while messages and `ModelResponse` use `.v1`. Only the current version of each type is supported.
+
+A step that returns a `ChatRollout` has it stored like any other entity
+(see [Entities and custom types](../../../fxtr/references/concepts/entities-and-custom-types.mdx)), and
 `await storage.store(entity)` and `await storage.load(ref)` work on them too. To load a bare ID,
 pass the concrete type, as in `as_type=ChatRollout`, not an abstract base such as
 `SessionInitialization`. A tree of transcripts and groups is stored as one entity, so there is no
 need to store each child separately.
 
+A stored rollout includes every field, including `initialization`. It keeps its initialization
+inline, as `DynamicData` (or an explicit null if there was none), since initialization types are
+open-ended. In Python, read it by naming the type you handle, which gives `None` for
+any other type:
+
+```python
+from behaviors.types import SetSystemMessage
+
+init = rollout.initialization
+set_system = init.try_as_type(SetSystemMessage) if init is not None else None
+```
+
 fxtr checks stored records strictly: give fields their declared types (`temperature=0.0`, not
-`0`), and keep metadata to JSON values with string keys.
+`0`), and keep transcript metadata to JSON values with string keys.
+
+The step cache can still hold results written under another type version. When changing the
+rollout version a project uses, launch under a fresh root or clear the affected steps' cache
+entries before rerunning (see [Managing the step cache](../../../fxtr/references/concepts/managing-the-step-cache.mdx)).
 
 ## Transcripts
 
@@ -69,7 +135,11 @@ A new project's renderer package doesn't depend on it yet: add
 ## Checkpointing sessions
 
 A serializable session can save its state and be restored from it. `await session.get_state()`
-returns a JSON object, and `await factory.restore_session(state)` starts a session in that state.
+returns the state as `DynamicData`, tagged with the implementation's own state type, and
+`await factory.restore_session(state)` starts a session in that state; it raises `ConversionError`
+for a state that isn't its own. To keep a state as JSON, write
+`json.dumps(thaw_fxtr_data(state.data))` (`thaw_fxtr_data` is in `fxtr.core.entity_data`), and
+read it back with `DynamicData.from_data(json.loads(text))`.
 The sessions of `chat_session_model_from_api` and of `ScriptedUserSimulator` support this, and the
 `serializable_context_policy_from_*` combinators build checkpointable policies when every component
 they combine is checkpointable. Generator-based policies can't be checkpointed, because a

@@ -57,11 +57,12 @@ views before drawing anything in a renderer.
 Launching and following jobs, and the step cache that decides what a launch recomputes. Read
 Running and viewing jobs before the first launch.
 
-| Task                                                                                                   | Read                                                                       |
-| ------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------- |
-| Launch a job, watch it in the viewer, return a report and read results, resume, inspect, or share jobs | [Running and viewing jobs](references/guides/running-and-viewing-jobs.mdx) |
-| Reuse or recompute cached results, resolve cache conflicts, change a step's logic                      | [Managing the step cache](references/concepts/managing-the-step-cache.mdx) |
-| Look up a command's options                                                                            | [CLI reference](references/reference/cli.mdx)                              |
+| Task                                                                                                   | Read                                                                                                                  |
+| ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| Launch a job, watch it in the viewer, return a report and read results, resume, inspect, or share jobs | [Running and viewing jobs](references/guides/running-and-viewing-jobs.mdx)                                            |
+| Choose how many steps run at once, or speed up a job whose steps call APIs                             | [Choose how many steps run at once](references/guides/running-and-viewing-jobs.mdx#choose-how-many-steps-run-at-once) |
+| Reuse or recompute cached results, resolve cache conflicts, change a step's logic                      | [Managing the step cache](references/concepts/managing-the-step-cache.mdx)                                            |
+| Look up a command's options                                                                            | [CLI reference](references/reference/cli.mdx)                                                                         |
 
 ## Best practices
 
