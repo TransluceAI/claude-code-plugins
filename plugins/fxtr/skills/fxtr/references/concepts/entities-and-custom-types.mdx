@@ -90,8 +90,11 @@ an entity.
 <Note>
   fxtr currently converts dataclasses to and from their stored form with the
   [cattrs](https://catt.rs/) library, with strict settings: unknown fields, missing fields, and
-  values of the wrong type are rejected rather than coerced. This implementation detail may change
-  in a future version; the dataclass surface described here is what to rely on.
+  values of the wrong type are rejected rather than coerced. Storing an entity checks that it will
+  load back under these rules, so a value they reject, such as an `int` in a `float` field or a
+  subclass in a field annotated with its base class, fails when it is stored rather than when it is
+  next read. This implementation detail may change in a future version; the dataclass surface
+  described here is what to rely on.
 </Note>
 
 ### Advanced use: low-level entity classes

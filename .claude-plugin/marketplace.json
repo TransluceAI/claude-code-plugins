@@ -21,7 +21,7 @@
       "name": "fxtr",
       "source": "./plugins/fxtr",
       "description": "Skills for writing, running, and viewing fxtr experiments, and for calling models from them with behaviors",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "author": {
         "name": "TransluceAI"
       },

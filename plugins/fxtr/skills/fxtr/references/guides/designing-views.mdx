@@ -15,19 +15,31 @@ covers registering renderers, loading data, and the kit's API.
 A project written with `fxtr new --example` has a complete small example in
 `views/src/overview.tsx`: a results overview with a chart that follows everything below.
 
+## What a view is for
+
+A view gives its reader an accurate and detailed picture of what happened in the experiment and
+what data it produced, even when the reader knows the experiment only at a high level. A view
+that says only "A scored 40 and B scored 50" leaves them asking what the scores are for and how
+they were computed. Answer that with the data itself: a good visualization shows the important
+facts in its marks, and links let the reader dig into the details behind each one
+([Linking to detail views](../reference/renderers.mdx#linking-to-detail-views)). Leave out
+explanatory prose the data can show instead. The project's `EXPERIMENT.md`
+([Watch jobs in the viewer](running-and-viewing-jobs.mdx#watch-jobs-in-the-viewer)) is
+where the experiment itself is explained.
+
 ## Where a view appears
 
-| Surface          | Renderer                                     | Room                                                                                                    | Base type | Surface under it |
-| ---------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------- | --------- | ---------------- |
-| Results overview | `InvocationPanel` of the root workflow       | the page, up to 1400px wide, 12px side margins                                                          | 13px      | `--bg-alt`       |
-| A pane           | `EntityPanel`, or a step's `InvocationPanel` | resizable; can be 300px or less                                                                         | 12px      | `--bg-alt`       |
-| A card's preview | the node's default view                      | beside each card while no pane is open, about half the page wide, as tall as the card, scrolling inside | 12px      | `--bg-alt`       |
-| Hover card       | `EntityHoverPreview`                         | 360px wide, at most 300px tall, the full cid below it                                                   | 11px      | `--bg`           |
-| Inline link      | `EntityInlineLink`                           | one line inside a pill, cut off with an ellipsis                                                        | 11px      | the pill         |
+| Surface          | Renderer                                     | Room                                                  | Base type | Surface under it |
+| ---------------- | -------------------------------------------- | ----------------------------------------------------- | --------- | ---------------- |
+| Results overview | `InvocationPanel` of the root workflow       | the page, up to 1400px wide, 12px side margins        | 13px      | `--bg-alt`       |
+| A pane           | `EntityPanel`, or a step's `InvocationPanel` | 600px wide when it opens; resizable                   | 12px      | `--bg-alt`       |
+| Hover card       | `EntityHoverPreview`                         | 360px wide, at most 300px tall, the full cid below it | 11px      | `--bg`           |
+| Inline link      | `EntityInlineLink`                           | one line inside a pill, cut off with an ellipsis      | 11px      | the pill         |
 
-A project's own renderer becomes the default view of its node, so the same component may draw at
-full page width, in a narrow pane, and in a card's preview. Design for every width from about 320px
+A project's own renderer becomes the default view of its node's pane, so the same component may
+draw at full page width and in a narrow pane. Design for every width from about 320px
 to 1400px, and put the finding that matters most at the top left, where every surface shows it.
+Where you can, fit a pane's opening width of 600px without overflowing or scrolling sideways.
 
 The viewer draws the frame. Leave out what it already gives:
 
@@ -124,6 +136,31 @@ Where marks need separating, leave real space between them, not a stroke or bord
 * Shadows only on what floats (the tooltip). Rules and borders are 1px.
 * No animation or transition of your own; the viewer animates only what is running.
 
+## Tables
+
+A list of records a reader may want to reorder or search (every prompt, every reading, a run's
+items) goes in the kit's `DataTable`, not a table written by hand: its columns sort, filter, and
+resize, and its header stays in view as the rows scroll.
+
+```tsx
+<DataTable
+  rows={readings}
+  rowKey={(r) => r.id}
+  columns={[
+    { key: "judge", label: "judge", value: (r) => r.judge },
+    { key: "score", label: "score", numeric: true, value: (r) => r.score, cell: (r) => formatNumber(r.score, 2) },
+  ]}
+/>
+```
+
+A column's `value` is what it sorts and filters by, and its `cell` draws it (a bar, a link);
+`numeric` right-aligns it in tabular figures. `renderRow(row, tr)` draws a row through `tr(props,
+selected)`, to make rows pressable or show one as selected. To open a detail view from a row,
+return a component that calls `useLink` and draws the row with `tr(link.props, link.open)`
+([Linking to detail views](../reference/renderers.mdx#linking-to-detail-views)). Write a table by
+hand, with `layout.table`, only for a matrix or a chart laid out as a table, such as the heatmap
+[below](#example-a-heatmap).
+
 ## Charts
 
 ### Choose the form
@@ -175,7 +212,10 @@ draws follows this guide: its own colors, fonts, tooltips, and fixed sizes do no
   3 to 4px radius; lines 1.5 to 2px. Direct labels (`layout.chartLabel`) on the few values that
   matter, not a number on every mark.
 * **Legends.** A `Legend` for two or more series, placed above the chart; none for one series
-  (its heading names it). A `ScaleLegend` for a sequential or diverging fill.
+  (its heading names it). A `ScaleLegend` for a sequential or diverging fill. Explain any other
+  encoding with a legend drawn from the chart's own marks, not a sentence: a filled square
+  labeled "won" beside an open one labeled "lost", rather than "a square is filled when the poet
+  won".
 * **Text in SVG** inherits the viewer's sans; size and color it with the `layout` classes or the
   type tokens. Align with SVG attributes (`textAnchor`, `dominantBaseline`).
 
@@ -199,6 +239,10 @@ draws follows this guide: its own colors, fonts, tooltips, and fixed sizes do no
   focus, cleared on leave and blur: the mark's name in bold, its value, and a line of context.
   Nothing in a tooltip can be pressed, so links go in the chart or under it. Never use SVG
   `<title>` or the `title` attribute for this.
+* **Details beside the view.** A pick whose detail needs room of its own (a point's readings, a
+  row's transcript) opens a detail view in a pane beside this one, through `useLink`, rather than
+  growing the view ([Linking to detail views](../reference/renderers.mdx#linking-to-detail-views)).
+  Spread the link's props onto the mark and draw it with `data-open={link?.open}`.
 * **Picks within the view.** A reader's pick that stays inside the view (a series focused, a
   point whose detail shows under the chart) is drawn with `data-picked="true"` (the same ink
   ring), the rest `layout.faded`; its detail goes in a `DetailBox`.
@@ -320,4 +364,4 @@ grep -rnE 'font-family: *[^v ]|font-size: *[0-9]|color-scheme|!important|<title>
 
 The rest is a look at the view in the viewer. The usual things to catch are a theme it reads badly
 in (the toggle is at the foot of the viewer's left rail) and a width it breaks at: drag a pane
-narrow, or close every pane to see the card previews.
+narrow.

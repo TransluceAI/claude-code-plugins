@@ -121,13 +121,22 @@ For one job, the viewer shows:
   by dimension. A value that references an entity is a link.
 * **Entity details**, opened from any link, in a pane you can keep alongside the trace. Hovering a
   link shows a preview.
-* **Your project's README**, linked from the side rail.
+* **Your project's `EXPERIMENT.md`**, linked from the side rail.
 
 The first sentence of each step's and workflow's docstring is what appears on its card, so write
 those as short imperative sentences that tell a reader what the operation does, such as "Compute
 mean scores across judges." Leave out edge cases and what the step is mapped over, which the card
 already shows. For progress worth reading while a step runs, write log lines with
 `context.log(...)`.
+
+`EXPERIMENT.md`, at the project root, describes the experiment for someone reading its results:
+the question it asks, what it compares or measures and why, and how each score or judgment is
+defined. Keep it current as the experiment changes.
+
+* Write it in plain English for a reader who knows the field but not this experiment. Define any
+  term specific to the experiment, or better, avoid it.
+* Leave out the steps of the computation, which the viewer's graph already shows, and leave out
+  code-level details and how to run it (the project's `README.md` is for those).
 
 All of this is drawn by the viewer's default renderers until the project adds its own, which can
 also give the root workflow a results overview: a view of the run that presents its results. See
