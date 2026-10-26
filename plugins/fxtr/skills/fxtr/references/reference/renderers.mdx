@@ -1,6 +1,6 @@
 ---
 title: "Renderers"
-description: "The renderer API: slots and registration, loading entities and invocations, step panels, links, panel state, the kit, and building the renderer package."
+description: "The renderer API: slots and registration, loading entities and invocations, step panels, links and detail views, panel state, the kit, and building the renderer package."
 ---
 
 A project's renderers are React components, written in TypeScript in the project's renderer
@@ -19,13 +19,12 @@ subject. The project's bundle, `views/src/bundle.ts`, exports its registrations 
 
 ```ts views/src/bundle.ts
 import { EntityPanel, InvocationPanel, renderer, type ViewBundle } from "fxtr-view";
-import { singleInvocation } from "fxtr-view-kit";
 import { DocumentPanel, Overview } from "./components";
 
 const bundle: ViewBundle = {
   renderers: [
     renderer(EntityPanel, "org.example.my_experiment.Document.v1", "my-project.DocumentPanel", DocumentPanel),
-    renderer(InvocationPanel, "my_experiment.run", "my-project.Overview", singleInvocation(Overview)),
+    renderer(InvocationPanel, "my_experiment.run", "my-project.Overview", Overview),
   ],
 };
 
@@ -67,25 +66,26 @@ outside the component, or memoized). Never call `useEntity` in a loop.
 ```
 
 An `InvocationPanel` is handed every invocation the viewer's selection picks out (its
-`invocations` prop, each with its key in the run), and must show any number of them
-([Step panels](#step-panels) says what each holds). The kit's
-adapters turn a view of one loaded invocation record into such a panel:
+`invocations` prop, each with its key in the run and its output array;
+[Step panels](#step-panels) says what each holds). It must be useful as soon as it is opened,
+however many it is handed: a step or child workflow mapped over a dim hands its view every
+invocation. Show one in full, and several in a view of their own (an aggregate, or a row or card
+each that links to that one alone), never a note asking the reader to select one. A root
+workflow's panel is always given its one invocation.
 
-* `singleInvocation(View)` loads the record when there is one invocation and passes it to `View`
-  as `invocation`; for any other count it asks for one invocation to be selected.
-* `eachInvocation(View)` shows several as collapsible sections, one per invocation, each loading
-  its own record when opened.
-
-A root workflow's panel is always given its one invocation. An invocation record has the
-function's `name`, its `state` and `error`, its `inputs` by argument name, and its `output`, each
-an array entity's ID to load in turn (`output` is null until there is one). The kit's
-`invocationInput(invocation, name)` reads a named input, and `InvocationOutcome` shows a run that
-has no output yet.
+`useInvocation(spawn.ref)` loads an invocation's record, which has the function's `name`, its
+`state` and `error`, its `inputs` by argument name, and its `output`, each an array entity's ID to
+load in turn (`output` is null until there is one). The kit's `invocationInput(invocation, name)`
+reads a named input, and `InvocationOutcome` shows a run that has no output yet. Where the view of
+several invocations is just the view of each in turn, the kit's `eachInvocation(View)` shows a
+collapsible section per invocation, each loading its own record when opened and passing it to
+`View` as `invocation`. (The kit's `singleInvocation(View)`, which shows a view of one record and
+otherwise asks for one invocation to be selected, is deprecated.)
 
 ## Step panels
 
-A step's `InvocationPanel` is its default view: the viewer draws it in the step's pane and as the
-preview beside its card in the job's trace, so a reader sees it without asking. What it is given:
+A step's `InvocationPanel` is its default view: the viewer draws it in the step's pane, which a
+reader opens from the step's card in the job's trace. What it is given:
 
 * **Spawns, not records.** `invocations` holds one `Spawn` per invocation the selection picks out:
   every invocation of the step, or fewer when the reader slices the level's dims (`slice dims`).
@@ -170,8 +170,8 @@ export function JudgePanel({ invocations }: InvocationPanelProps) {
 ```
 
 Register it with `renderer(InvocationPanel, "my_experiment.judge", "my-project.JudgePanel",
-JudgePanel)`. `singleInvocation` and `eachInvocation` suit a view of one invocation's record; a
-panel over many spawns, like this one, reads them directly.
+JudgePanel)`. `eachInvocation` suits a view of one invocation's record repeated per invocation; a
+panel that shows many spawns together, like this one, reads them directly.
 
 ## Links
 
@@ -180,6 +180,62 @@ the viewer's own link: a chip that opens the entity in a pane and shows its prev
 chart's mark can't be a chip, so it uses `useEntityLinks()`, whose `open(id)` does what pressing
 the entity's link does, and whose `isOpen(id)` says whether a pane shows the entity.
 [Designing views](../guides/designing-views.mdx#interaction) shows how marks use them.
+
+### Linking to detail views
+
+A view that opens a detail of something picked in it (a chart's point, a table's row) declares
+the detail as a view of its own, which reads the params the pick adds, and links to it with
+`useLink`. Declare views apart from their components, with `declareView(slot, subject, id,
+options)`, in a module that imports no components, so views can link to each other without
+import cycles:
+
+```ts views/src/views.ts
+import { InvocationPanel, declareView } from "fxtr-view";
+
+export const SCORES = declareView(InvocationPanel, "my_experiment.score", "my-project.Scores");
+export const FIT = declareView(InvocationPanel, "my_experiment.score", "fit", { within: SCORES, params: ["proposition"] });
+```
+
+Register a declared view with `renderer(SCORES, ScoresPanel)` and `renderer(FIT, FitPanel)`. In
+`ScoresPanel`, each mark links to the detail with the row's keys and the params the detail reads,
+by name, and spreads the link's props onto the element:
+
+```tsx
+const link = useLink(FIT, { target_model, proposition });
+<circle {...link?.props} className={layout.mark} data-open={link?.open} />
+```
+
+The viewer opens the detail beside the view, hands it the invocations its params pick out
+(`target_model`, a dim of the step) and the params it declares (`proposition`; a link that leaves
+one out is a type error), and keeps it following the view. Type the detail's component with
+`ViewProps<typeof FIT>`: its `params` then binds each declared param (`params.proposition`), so
+the view only checks the values (a string, one of a few names). `useLink` returns null where the
+viewer cannot open a view from here; the view then shows the detail in place.
+
+Declare a detail `within` the view that links to it when only that view does: its ID is named
+below that view's (`my-project.Scores/fit`), and its pane closes when the view before it changes
+to another. Declare a detail that several views link to on its own, and link to it from each.
+
+A link can also name a location, relative to the view's own or absolute, opened in that
+location's default view or a declared one: `useLink({ to: "../sibling_step" }, keys)`,
+`useLink({ view: REPLIES, to: "/respond" }, keys)`. A location is a step path from the run's root
+workflow (`/score`, or `/round/judge` for a step inside a workflow step), then a field path into
+each invocation's record: `.output.call` for a field of the step's output, `.inputs.prompt` for an
+input. From a view of a step, `.output…` is below it and `../step` is a sibling.
+
+An `EntityLink` to an entity inside what the view was handed says where the entity sits, with
+`at`: `<EntityLink id={call} at={{ keys: spawn.key, path: ["call"] }} />` for the `call` field of
+one invocation's output, or `at={{ path: ["messages", 2] }}` in an entity's view. The pane it opens
+follows the view as the view moves. For an entity better shown somewhere else (a step's input,
+another step's output), name the location instead, with `to` (and `view`, for a declared view) and
+the `params` it is opened at: `<EntityLink id={id} to=".inputs.prompt" params={spawn.key} />`. A
+link takes one or the other; with neither, it opens the entity alone.
+
+A view of the whole run (a chart across several steps) is a view of the root workflow. A detail
+that several views link to and that belongs to no one step can be a **page**:
+`declarePage(name, { params })` declares it and `page(decl, Component)` registers it. A page's
+component is handed the run (`run`, the root workflow's invocation), its `params`, and `storage`
+(`PagePanelProps`). A page opens only from links to it.
 
 ## Panel state
 
@@ -194,9 +250,8 @@ const [order, setOrder] = useStoredState(storage, "order", "guest");
 
 Stored values are trusted as the initial value's type unless you pass a type guard, `isValid`, to
 reject an obsolete choice or state from another version of the view; a rejected value reads as
-the initial one. The initial value and the guard are captured once for each storage and key. A view
-wrapped with `singleInvocation` receives `storage` when its props declare it
-(`{ invocation, storage }`). Keep hover and focus in `useState`. State a component keeps in
+the initial one. The initial value and the guard are captured once for each storage and key.
+Keep hover and focus in `useState`. State a component keeps in
 `useState` starts over when a rebuild replaces the renderers; state in `storage` stays.
 
 ## Styles
@@ -217,13 +272,15 @@ every use against them.
 
 From `fxtr-view`:
 
-| Name                                                     | What it is                                                                          |
-| -------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| `renderer`, the slots, `ViewBundle`                      | registration ([above](#registering-renderers))                                      |
-| `useEntity`, `unwrap`, `useInvocation`, `idKey`          | loading an entity or an invocation record, and an ID's key                          |
-| `isArrayData`, `scalarEntityId`, `scalarValue`, `rowsOf` | reading an array entity: a step's output ([Step panels](#step-panels))              |
-| `EntityLink({ id })`                                     | the viewer's link to an entity: a chip that opens it, with a hover preview          |
-| `useEntityLinks()`                                       | `{ open(id), isOpen(id) }`: open an entity from a mark, and whether a pane shows it |
+| Name                                                             | What it is                                                                                                                          |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `renderer`, the slots, `ViewBundle`                              | registration ([above](#registering-renderers))                                                                                      |
+| `useEntity`, `unwrap`, `useInvocation`, `idKey`                  | loading an entity or an invocation record, and an ID's key                                                                          |
+| `isArrayData`, `scalarEntityId`, `scalarValue`, `rowsOf`         | reading an array entity: a step's output ([Step panels](#step-panels))                                                              |
+| `EntityLink({ id, at })`, `EntityLink({ id, to, view, params })` | the viewer's link to an entity: a chip that opens it, with a hover preview ([Links](#links))                                        |
+| `useEntityLinks()`                                               | `{ open(id), isOpen(id) }`: open an entity from a mark, and whether a pane shows it                                                 |
+| `declareView`, `ViewProps`, `useLink`                            | declaring a view other views link to, its component's props, and a link to it ([Linking to detail views](#linking-to-detail-views)) |
+| `declarePage`, `page`, `PagePanelProps`                          | a page: a view of the run reached only by links                                                                                     |
 
 From `fxtr-view-kit`:
 
@@ -243,7 +300,8 @@ From `fxtr-view-kit`:
 | `DetailBox({ title, onClose, children })`                                                                              | the box showing a pick under a chart                                                                                                                                                                                                              |
 | `formatNumber(v, digits)`, `formatPercent(share, digits)`, `formatSigned(v, digits)`, `countLabel(n, noun)`, `MISSING` | numbers as the viewer writes them                                                                                                                                                                                                                 |
 | `useStoredState(storage, key, initial, isValid?)`                                                                      | `useState` kept in the panel's storage ([above](#panel-state))                                                                                                                                                                                    |
-| `singleInvocation`, `eachInvocation`, `invocationInput`, `LoadEach`                                                    | invocation adapters and loading ([above](#loading-data))                                                                                                                                                                                          |
+| `DataTable({ rows, columns, rowKey, renderRow })`                                                                      | a table of records whose columns sort, filter, and resize ([Designing views](../guides/designing-views.mdx#tables))                                                                                                                               |
+| `eachInvocation`, `invocationInput`, `LoadEach`                                                                        | an invocation adapter, and loading ([above](#loading-data)); `singleInvocation` is deprecated                                                                                                                                                     |
 | `spawnKeyLabel(spawn)`                                                                                                 | a spawn's key as a label ([Step panels](#step-panels))                                                                                                                                                                                            |
 | `MessageList`, `excerpt`                                                                                               | chat turns, and text cut to a length                                                                                                                                                                                                              |
 

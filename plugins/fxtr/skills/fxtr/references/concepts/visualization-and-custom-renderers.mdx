@@ -65,14 +65,13 @@ ID, and the component:
 
 ```ts views/src/bundle.ts
 import { EntityPanel, InvocationPanel, renderer, type ViewBundle } from "fxtr-view";
-import { singleInvocation } from "fxtr-view-kit";
 import { AnswerPanel } from "./answer";
 import { Overview } from "./overview";
 
 const bundle: ViewBundle = {
   renderers: [
     renderer(EntityPanel, "org.example.qa.Answer.v1", "my-project.AnswerPanel", AnswerPanel),
-    renderer(InvocationPanel, "qa.evaluate", "my-project.Overview", singleInvocation(Overview)),
+    renderer(InvocationPanel, "qa.evaluate", "my-project.Overview", Overview),
   ],
 };
 
@@ -81,7 +80,7 @@ export default bundle;
 
 Renderers are built with two libraries. **`fxtr-view`** is the small, stable contract between a
 renderer and the viewer: the slots, `renderer(...)`, and hooks for loading data and linking to
-entities. **`fxtr-view-kit`** has building blocks that match the viewer: layout classes, chart
+entities and to other views. **`fxtr-view-kit`** has building blocks that match the viewer: layout classes, tables, chart
 parts and controls, number formats, and adapters for showing invocations and loading many entities
 at once. The [renderer reference](../reference/renderers.mdx) describes both, with the rules for
 registering renderers.

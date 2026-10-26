@@ -77,6 +77,10 @@ Do these by default, unless the user asks otherwise.
 * **Write each docstring's first sentence for the viewer.** The operation's card shows it, so make
   it a short imperative sentence saying what the operation does
   ([Watch jobs in the viewer](references/guides/running-and-viewing-jobs.mdx#watch-jobs-in-the-viewer)).
+* **Describe the experiment in `EXPERIMENT.md`** at the project root, which the viewer's rail
+  links to: the question, what is compared or measured and why, and how scores are defined, in
+  plain English for a reader new to the experiment. Keep it current as the experiment changes
+  ([Watch jobs in the viewer](references/guides/running-and-viewing-jobs.mdx#watch-jobs-in-the-viewer)).
 * **Return a report from the root workflow**: one entity that references every result worth
   presenting, for the launcher and the results overview to read
   ([Read results](references/guides/running-and-viewing-jobs.mdx#read-results)).
@@ -101,13 +105,11 @@ before [adding one](references/reference/renderers.mdx#adding-a-package-to-a-pro
 * **Give each step an `InvocationPanel`**, registered
   under the step's name, whenever there is something useful to show beyond the output array itself. The step's pane already shows its arrays as tables, so don't redraw them
   ([Where a view appears](references/guides/designing-views.mdx#where-a-view-appears)).
-  The panel becomes the step's default view, in its pane and in its card's preview, and it is
+  The panel becomes the step's default view, in the pane its card opens, and it is
   handed every invocation the viewer's selection picks out, up to all of a mapped step's. Show
   one in full and several together (a chart or a summary), loading their outputs with `LoadEach`
-  ([Step panels](references/reference/renderers.mdx#step-panels)).
-  Wrapping a view of one invocation in `singleInvocation` asks the reader to select one when
-  there are several, so keep it for the root workflow and for steps that are neither mapped nor
-  replicated.
+  ([Step panels](references/reference/renderers.mdx#step-panels)). Never show a note
+  asking the reader to select one; `singleInvocation`, which does that, is deprecated.
 * **Give the root workflow a results overview**: an `InvocationPanel` that reads the workflow's
   report and presents the experiment's findings
   ([Results overviews](references/concepts/visualization-and-custom-renderers.mdx#results-overviews)).

@@ -33,4 +33,4 @@ in the order of the site's navigation.
 - [Designing views](guides/designing-views.mdx): How a renderer's views should look and behave in the viewer: surfaces, type, color, charts, links, controls, and how to check them.
 - [Array queries](reference/array-queries.mdx): Filter, reshape, aggregate, and join arrays with the query builder or SQL, in a workflow or in a step.
 - [Project configuration](reference/project-configuration.mdx): What fxtr new writes, and the settings in pyproject.toml and fxtr.local.toml.
-- [Renderers](reference/renderers.mdx): The renderer API: slots and registration, loading entities and invocations, step panels, links, panel state, the kit, and building the renderer package.
+- [Renderers](reference/renderers.mdx): The renderer API: slots and registration, loading entities and invocations, step panels, links and detail views, panel state, the kit, and building the renderer package.
