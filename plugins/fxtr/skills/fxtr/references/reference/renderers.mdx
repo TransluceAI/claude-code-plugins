@@ -209,7 +209,9 @@ The viewer opens the detail beside the view, hands it the invocations its params
 (`target_model`, a dim of the step) and the params it declares (`proposition`; a link that leaves
 one out is a type error), and keeps it following the view. Type the detail's component with
 `ViewProps<typeof FIT>`: its `params` then binds each declared param (`params.proposition`), so
-the view only checks the values (a string, one of a few names). `useLink` returns null where the
+the view only checks the values (a string, one of a few names). A param's value is any JSON (a
+string, a number, a list, an object), and nothing checks it before the view gets it, so the view
+narrows it itself. `useLink` returns null where the
 viewer cannot open a view from here; the view then shows the detail in place.
 
 Declare a detail `within` the view that links to it when only that view does: its ID is named
@@ -230,6 +232,30 @@ follows the view as the view moves. For an entity better shown somewhere else (a
 another step's output), name the location instead, with `to` (and `view`, for a declared view) and
 the `params` it is opened at: `<EntityLink id={id} to=".inputs.prompt" params={spawn.key} />`. A
 link takes one or the other; with neither, it opens the entity alone.
+
+### Params of an entity's views
+
+An entity's view (an `EntityPanel` renderer) can read params too, declared the same way:
+`declareView(EntityPanel, "my_project.Transcript", "my-project.Transcript", { params: ["selector"] })`.
+They are optional, since the viewer also opens the entity from links that bind none: the
+component's `params.selector` may be absent. The main use is a **selector**, a value telling the
+view which part of the entity to point out (a message to mark, a span to highlight), much like a
+text fragment in a URL. fxtr gives selectors no meaning or shape of their own: a selector is a
+param whose value the view decides, usually stored in a field of another entity (a judgment's
+citation, beside the reference to the transcript it cites). A link carries it as `params`:
+
+```tsx
+<EntityLink id={data.transcript} params={{ selector: data.selector }} />
+```
+
+A link with params opens the entity alone, and stays on it: the params are about that one
+entity, so it doesn't follow the view it was opened from as a link with `at` does, and the panes
+opened from it don't inherit them. The pane keeps every param the link passed and hands each of
+the entity's views the ones it declares, whichever is shown, so two views of a type that read the
+same param should agree on its shape. A pane's head shows a short param's value (a dim's key, say)
+and a longer one's name alone, and on an entity's pane a × to clear it. Nothing checks that the
+shape the producing step stores matches what the view reads: keep them the same, and have the view
+ignore a value it can't use.
 
 A view of the whole run (a chart across several steps) is a view of the root workflow. A detail
 that several views link to and that belongs to no one step can be a **page**:
@@ -362,6 +388,12 @@ updates without a restart.
 
 If a bundle fails to load in the browser, the viewer keeps the renderers it already loaded, or
 uses its defaults when none were loaded, and the side rail says why.
+
+If fxtr says the bundle was built at another view API version, the renderers were built against
+another fxtr's packages, usually a `views/vendor/fxtr/` copy from before you upgraded fxtr. A
+release that changes the view API incompatibly bumps that version, and the viewer then refuses
+bundles built at the old one. Refresh the copy, reinstall, and rebuild, as above, and fix any
+renderer code that used an API the new `fxtr-view` no longer has.
 
 ### Adding a package to a project
 

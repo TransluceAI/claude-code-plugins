@@ -13,9 +13,11 @@ Use it to sample a model, simulate an interaction, or ask a model to judge anoth
 output.
 
 You control the messages, tools, and stopping conditions of an interaction. behaviors handles
-the conversation loop and provides configurable retries and failure recording. It supplies no
-general-purpose judge and no model-driven user simulator: you write those for your experiment
-from its interfaces, as the [judge step](guides/language-models.mdx#a-judge-step) does.
+the conversation loop and provides configurable retries and failure recording. Users can be
+scripted, or simulated by models: a base model writing the user's messages, optionally steered
+by a chat model (see [Simulated users](guides/policies-and-tools.mdx#simulated-users)).
+behaviors supplies no general-purpose judge: you write one for your experiment from its
+interfaces, as the [judge step](guides/language-models.mdx#a-judge-step) does.
 
 behaviors works with [fxtr](../../fxtr/references/index.mdx): conversation records can be stored as fxtr entities,
 returned from steps, and inspected in the experiment viewer. fxtr manages the experiment's

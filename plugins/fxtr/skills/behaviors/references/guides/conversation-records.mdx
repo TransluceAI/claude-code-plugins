@@ -132,6 +132,14 @@ A new project's renderer package doesn't depend on it yet: add
 [The renderer package](../../../fxtr/references/reference/renderers.mdx#the-renderer-package)). The package also exports
 `ChatRolloutView`, for a rollout inside a view of your own, and `ComparedRollouts`.
 
+A rollout's or a transcript's conversation view reads a `selector` param, `{ message: n }`, and
+marks and scrolls to that message: the `n`th of the messages it draws, counting a transcript's
+messages in order, and a rollout's turn by turn, each turn's context messages and then its model's
+(not its initialization). A view of your own links to it with that selector, read from an entity
+that stores one (see [Params of an entity's
+views](../../../fxtr/references/reference/renderers.mdx#params-of-an-entitys-views)); `MessageSelector` and
+`isMessageSelector` are exported for it. This selector is provisional.
+
 ## Checkpointing sessions
 
 A serializable session can save its state and be restored from it. `await session.get_state()`
@@ -140,7 +148,9 @@ returns the state as `DynamicData`, tagged with the implementation's own state t
 for a state that isn't its own. To keep a state as JSON, write
 `json.dumps(thaw_fxtr_data(state.data))` (`thaw_fxtr_data` is in `fxtr.core.entity_data`), and
 read it back with `DynamicData.from_data(json.loads(text))`.
-The sessions of `chat_session_model_from_api` and of `ScriptedUserSimulator` support this, and the
+The sessions of `chat_session_model_from_api`, `ScriptedUserSimulator`, and the
+[simulated users](policies-and-tools.mdx#checkpointing-a-simulated-user)
+(`BaseModelUserSimulator` and `PilotSteeredUserSimulator`) support this, and the
 `serializable_context_policy_from_*` combinators build checkpointable policies when every component
 they combine is checkpointable. Generator-based policies can't be checkpointed, because a
 suspended generator can't be saved.
