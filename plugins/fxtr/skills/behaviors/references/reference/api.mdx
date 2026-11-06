@@ -1,6 +1,6 @@
 ---
 title: "API overview"
-description: "The layers of behaviors, where each is imported from, the provider adapters, and the request, response, and sampling types."
+description: "The layers of behaviors, where each is imported from, the provider adapters and model providers, and the request, response, and sampling types."
 ---
 
 behaviors is built in layers, from one model request up to a whole conversation with an
@@ -11,26 +11,31 @@ fxtr steps.
 
 ## Choose a layer
 
-| Need                                               | API                                                                                                                                                        |
-| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| One model request, no conversation state           | `ModelAPI.generate(ModelRequest)`, from `behaviors.interfaces.model_apis`; returns a `ModelResponse` or a `ModelCallFailure`.                              |
-| Incremental output from a request                  | `StreamingModelAPI.generate_with_events(request, callback)`.                                                                                               |
-| One request with a retry schedule                  | `generate_with_retries(api, request, retry=..., failure_categories_to_retry=...)`, from `behaviors.implementations.models`.                                |
-| A conversation with accumulated messages           | `chat_session_model_from_api(api, sampling, retry=...)`, from `behaviors.implementations.models`, which creates an independent session per conversation.   |
-| A model against an environment or a simulated user | `run_chat_rollout(model, context_policy, ...)`, from `behaviors.rollouts.chat`; returns a `ChatRollout`.                                                   |
-| Fixed user prompts                                 | `ScriptedUserSimulator(messages=(...))`, made a policy with `context_policy_from_user_simulator(..., initialization=...)`.                                 |
-| User prompts interleaved with tool calls           | `context_policy_from_user_and_tools(user, tools, initialization=...)`.                                                                                     |
-| A first turn followed only by tool turns           | `context_policy_from_tool_policy(tools, first_turn_messages=..., initialization=...)`.                                                                     |
-| A custom or adaptive conversation                  | `context_policy_from_generator`, or a subclass of `GeneratorContextPolicy`; for checkpoints, implement the `ContextPolicy` and session protocols directly. |
-| Plain transcripts for viewers or readers           | `ChatRolloutTranscriptProjection`, from `behaviors.rollouts.chat`, with `Transcript`, `TranscriptGroup`, and `AgentRun`.                                   |
-| Docent readings                                    | `DocentReadingStep` and the conversions in `behaviors.implementations.docent`, with `behaviors[docent]`.                                                   |
+| Need                                                 | API                                                                                                                                                        |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| One model request, no conversation state             | `ModelAPI.generate(ModelRequest)`, from `behaviors.interfaces.model_apis`; returns a `ModelResponse` or a `ModelCallFailure`.                              |
+| Incremental output from a request                    | `StreamingModelAPI.generate_with_events(request, callback)`.                                                                                               |
+| Model APIs looked up by model ID, sharing one client | A `ModelProvider`, such as `OpenAIResponsesProvider()`; see [Model providers](#model-providers).                                                           |
+| One request with a retry schedule                    | `generate_with_retries(api, request, retry=..., failure_categories_to_retry=...)`, from `behaviors.implementations.models`.                                |
+| A conversation with accumulated messages             | `chat_session_model_from_api(api, sampling, retry=...)`, from `behaviors.implementations.models`, which creates an independent session per conversation.   |
+| A model against an environment or a simulated user   | `run_chat_rollout(model, context_policy, ...)`, from `behaviors.rollouts.chat`; returns a `ChatRollout`.                                                   |
+| Fixed user prompts                                   | `ScriptedUserSimulator(messages=(...))`, made a policy with `context_policy_from_user_simulator(..., initialization=...)`.                                 |
+| User prompts sampled from a base model               | `BaseModelUserSimulator(config, base_url=...)`, from `behaviors.implementations.context_policies.base_model_user_simulator`.                               |
+| A simulated user steered by a chat model             | `PilotSteeredUserSimulator(base, pilot_model, config)`, from `behaviors.implementations.context_policies.pilot_steered_user_simulator`.                    |
+| User prompts interleaved with tool calls             | `context_policy_from_user_and_tools(user, tools, initialization=...)`.                                                                                     |
+| A first turn followed only by tool turns             | `context_policy_from_tool_policy(tools, first_turn_messages=..., initialization=...)`.                                                                     |
+| A custom or adaptive conversation                    | `context_policy_from_generator`, or a subclass of `GeneratorContextPolicy`; for checkpoints, implement the `ContextPolicy` and session protocols directly. |
+| Plain transcripts for viewers or readers             | `ChatRolloutTranscriptProjection`, from `behaviors.rollouts.chat`, with `Transcript`, `TranscriptGroup`, and `AgentRun`.                                   |
+| Docent readings                                      | `DocentReadingStep` and the conversions in `behaviors.implementations.docent`, with `behaviors[docent]`.                                                   |
 
 The guides cover the layers above the request:
 [policies and tools](../guides/policies-and-tools.mdx),
 [rollout outcomes and retries](../guides/rollout-outcomes.mdx),
 [conversation records and checkpoints](../guides/conversation-records.mdx), and
-[Docent readings](../guides/docent-readings.mdx). behaviors supplies no general judge and no
-model-driven user simulator: build those for your experiment from these interfaces, as the
+[Docent readings](../guides/docent-readings.mdx). Users simulated by a base model, and
+steered by a pilot model, are in
+[Simulated users](../guides/policies-and-tools.mdx#simulated-users). behaviors supplies no
+general judge: build one for your experiment from these interfaces, as the
 [judge step](../guides/language-models.mdx#a-judge-step) does.
 
 ## Where things are imported from
@@ -40,12 +45,15 @@ model-driven user simulator: build those for your experiment from these interfac
   turns and statuses, and transcripts.
 * `behaviors.implementations.models` exports `chat_session_model_from_api`,
   `generate_with_retries`, `DEFAULT_FAILURE_CATEGORIES_TO_RETRY`, and `SamplingOverrides`.
-* `behaviors.implementations.context_policies` exports the user simulators, tool policies, and
-  policy combinators.
-* `behaviors.interfaces` holds the protocols: `model_apis`, `chat_session_models`,
-  `context_policies`, and `projections`.
-* The provider adapters are each in a module of their own (below), imported explicitly, because
-  they need the provider SDKs.
+  `behaviors.implementations.models.providers` holds `SingleModelProvider` and `ModelOverrides`.
+* `behaviors.implementations.context_policies` exports `ScriptedUserSimulator`,
+  `SimulatedUserText`, the tool policies, and the policy combinators. The model-driven user
+  simulators are in modules of their own there: `base_model_user_simulator`, with the profile
+  types in `base_model_prompt`, and `pilot_steered_user_simulator`, with `PilotSteering`.
+* `behaviors.interfaces` holds the protocols: `model_apis` (including `ModelProvider`),
+  `chat_session_models`, `context_policies`, and `projections`.
+* The provider adapters and their model providers are each in a module of their own (below),
+  imported explicitly, because they need the provider SDKs. So does `base_model_user_simulator`.
 
 ## Sessions and factories
 
@@ -57,7 +65,8 @@ a `ContextPolicy` is a factory whose sessions supply the model's initialization 
 
 `run_chat_rollout` starts a session of each factory and closes both when it returns, including on
 cancellation. It does not own the provider client, which the caller closes with
-`await api.aclose()`. Use a fresh session for each independent conversation. The sessions of
+`await api.aclose()`, or `await provider.aclose()` for a [model provider](#model-providers). Use
+a fresh session for each independent conversation. The sessions of
 `chat_session_model_from_api` accept `None` or `SetSystemMessage` as their initialization; any
 other kind needs a session model that understands it. Close sessions you start yourself with
 `aclose()`.
@@ -67,11 +76,11 @@ other kind needs a session model that understands it. Close sessions you start y
 Install the provider SDKs with the `models` extra, `behaviors[models]`. The core types, context
 policies, and rollouts with a fake model need no SDK.
 
-| Provider interface                               | Adapter                                                                              |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------ |
-| Anthropic Messages                               | `from behaviors.implementations.models.anthropic import AnthropicMessagesAPI`        |
-| OpenAI Responses                                 | `from behaviors.implementations.models.openai_responses import OpenAIResponsesAPI`   |
-| OpenAI Chat Completions, and compatible services | `from behaviors.implementations.models.openai_compatible import OpenAICompatibleAPI` |
+| Provider interface                               | Module                                               | Adapter                | Model provider              |
+| ------------------------------------------------ | ---------------------------------------------------- | ---------------------- | --------------------------- |
+| Anthropic Messages                               | `behaviors.implementations.models.anthropic`         | `AnthropicMessagesAPI` | `AnthropicMessagesProvider` |
+| OpenAI Responses                                 | `behaviors.implementations.models.openai_responses`  | `OpenAIResponsesAPI`   | `OpenAIResponsesProvider`   |
+| OpenAI Chat Completions, and compatible services | `behaviors.implementations.models.openai_compatible` | `OpenAICompatibleAPI`  | `OpenAICompatibleProvider`  |
 
 Construct an adapter with the provider's model ID, as in `OpenAIResponsesAPI("gpt-6-luna")`;
 [Choosing models](../guides/choosing-models.mdx) shows how to find IDs. Adapters read
@@ -82,6 +91,85 @@ injected client to its caller. Never store credentials in experiment inputs or e
 
 The adapters turn off the SDKs' own retries, so that behaviors decides when a call is tried again
 (see [Rollout outcomes and retries](../guides/rollout-outcomes.mdx#failures-and-retries)).
+
+### Adapter options
+
+Each adapter also takes keyword options that apply to every request it sends.
+
+`AnthropicMessagesAPI`:
+
+* `default_max_tokens` (16,384) is the `max_tokens` sent when a request's sampling leaves it
+  unset, since Anthropic requires one.
+* `final_block_cache_control`, a `CacheControl`, puts a prompt-cache breakpoint on the final
+  content block of each request, when that block is non-empty text or a tool result the request
+  didn't already mark. With it, each turn of a conversation reads the cached prefix the previous
+  turn wrote, without marking messages yourself. Adding it raises `ModelError` when the request
+  would then have more than Anthropic's four breakpoints, or a 1-hour breakpoint after a 5-minute
+  one.
+* `thinking_display`, `"summarized"` (the default) or `"omitted"`, is sent with enabled thinking.
+  `"summarized"` streams summarized thinking text; `"omitted"` returns only signed, empty
+  thinking blocks. The adapter always sends it, since newer models omit thinking text unless
+  asked.
+* `fast_mode=True` asks for fast-mode inference on every request (`speed: "fast"`, with its beta
+  header). A model that doesn't offer fast mode rejects the request.
+
+```python
+from behaviors.implementations.models.anthropic import AnthropicMessagesAPI
+from behaviors.types import CacheControl
+
+api = AnthropicMessagesAPI(model_id, final_block_cache_control=CacheControl(), fast_mode=True)
+```
+
+`OpenAIResponsesAPI` and `OpenAICompatibleAPI` take `extra_body`, a dictionary added to every
+request's body; a request's `SamplingParams.extra` takes precedence over it. `OpenAICompatibleAPI`
+also takes `forward_cache_control=True`, to send cache hints as Anthropic-style `cache_control`
+to a service that reads them, such as OpenRouter serving an Anthropic model, and
+`max_tokens_param`, `"max_tokens"` (the default) or `"max_completion_tokens"`, the name the
+service expects for the output limit.
+
+## Model providers
+
+A `ModelProvider`, from `behaviors.interfaces.model_apis`, looks up a `ModelAPI` by model ID:
+`provider.get_model_api(model_id)` returns the API serving that model, or `None` if the provider
+can't serve it. Use one where code picks models by ID as it runs, such as a harness whose main
+and helper calls name different models, or to send requests for many models through one client.
+
+Each adapter module has a provider (the table above), which builds that module's adapter for any
+model ID. It takes the adapter's credentials and options, less the model ID; it builds one
+adapter per model ID, on the first lookup, and returns the same one after that; and every
+adapter it builds sends its requests through the provider's one client, its `client` property.
+Close the provider, not the adapters it built: `await provider.aclose()` closes the client if the
+provider created it, and leaves a client passed with `client=...` to its caller. Closing an
+adapter that a provider built does nothing.
+
+```python
+import os
+
+from behaviors.implementations.models.openai_compatible import OpenAICompatibleProvider
+
+openrouter = OpenAICompatibleProvider(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=os.environ["OPENROUTER_API_KEY"],
+)
+try:
+    subject = openrouter.get_model_api(subject_id)
+    judge = openrouter.get_model_api(judge_id)
+    ...
+finally:
+    await openrouter.aclose()
+```
+
+Two providers in `behaviors.implementations.models.providers` work with any adapter, and compose
+others:
+
+* `SingleModelProvider(model_api)` serves one API for every model ID, such as a fake model that
+  stands in for every model in a test.
+* `ModelOverrides(overrides={model_id: api, ...}, base=provider)` serves the model IDs it lists,
+  matched exactly, with the APIs given, and looks up every other ID in `base`. With no `base`, it
+  serves only the IDs it lists. Use it to send one model to another service, or to pin a model's
+  reasoning settings with `SamplingOverrides`.
+
+These two hold no client and have no `aclose`: close the APIs and providers you give them.
 
 ## Requests and responses
 
@@ -94,13 +182,28 @@ cached and reasoning tokens are `None` when the provider doesn't report them.
 ## Sampling settings
 
 `SamplingParams` has `max_tokens`, `temperature`, `top_p`, `stop_sequences`, `reasoning`, and a
-provider-specific `extra`. `ReasoningParams` has `enabled`, `budget_tokens`, and `effort`
-(`"minimal"` to `"max"`, clamped to the levels a provider offers). A setting left `None` leaves
-the choice to the adapter or the provider, and which settings take effect depends on the adapter
-and the model: `OpenAIResponsesAPI`, for example, doesn't apply `stop_sequences`. Leave a setting
-unset unless your adapter and model support it, and don't expect `extra` settings to carry over
-from one adapter to another. Write numeric fields with their declared types, such as
-`temperature=0.0` rather than `0`, since stored records are checked strictly.
+provider-specific `extra`. A setting left `None` leaves the choice to the adapter or the
+provider, and which settings take effect depends on the adapter and the model:
+`OpenAIResponsesAPI`, for example, doesn't apply `stop_sequences`. Leave a setting unset unless
+your adapter and model support it, and don't expect `extra` settings to carry over from one
+adapter to another. Write numeric fields with their declared types, such as `temperature=0.0`
+rather than `0`, since stored records are checked strictly.
+
+`ReasoningParams` has `enabled`, `budget_tokens`, and `effort`, one of `"minimal"`, `"low"`,
+`"medium"`, `"high"`, `"xhigh"`, and `"max"`. Each adapter turns them into its provider's
+parameters:
+
+* The OpenAI adapters send an `effort` you set as it is, `"xhigh"` and `"max"` included, as
+  `reasoning.effort` (Responses) or `reasoning_effort` (Chat Completions). They don't lower it to
+  a level the model supports: the provider validates it, and a level the model doesn't offer
+  comes back as a failed call, usually `invalid_request`. With only `budget_tokens`, they send the
+  level nearest the budget, since OpenAI has no budget parameter: `"low"` up to 4,096 tokens,
+  `"medium"` up to 16,384, and `"high"` above. `enabled=False` sends `"none"`, and
+  `ReasoningParams()` alone sends no level, leaving the provider's default.
+* `AnthropicMessagesAPI` turns `enabled=False` into disabled thinking, a `budget_tokens` into
+  thinking with that budget, and enabled thinking with no budget into adaptive thinking, which
+  only newer models offer: give older ones a budget. An `effort` is sent as
+  `output_config.effort`, except `"minimal"`, which Anthropic doesn't offer, sent as `"low"`.
 
 `SamplingOverrides(inner=api, reasoning=...)` wraps an adapter and pins the reasoning settings of
 every request; despite its name, it overrides reasoning only.

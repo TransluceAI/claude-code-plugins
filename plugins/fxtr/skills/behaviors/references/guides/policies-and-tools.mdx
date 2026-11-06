@@ -1,6 +1,6 @@
 ---
 title: "Policies and tools"
-description: "Decide what the model sees each turn: scripted users, tool policies, their combinations, and custom conversation flows."
+description: "Decide what the model sees each turn: scripted users, users simulated by a base model and steered by a pilot, tool policies, their combinations, and custom conversation flows."
 ---
 
 A **context policy** is the model's environment in a rollout. It supplies the session's
@@ -16,6 +16,267 @@ These come from `behaviors.implementations.context_policies`.
 then returns `EndRollout()`. `context_policy_from_user_simulator(user, initialization=...)` makes
 it a policy, as in the [conversation step](language-models.mdx#a-conversation-as-a-step).
 That policy never offers the model tools, and raises if the model calls one anyway.
+
+## Simulated users
+
+Two user simulators write the user's messages with models instead of a script:
+
+* `BaseModelUserSimulator` samples each message from a **base model** (a pretrained model
+  without chat tuning) that continues a transcript in the user's voice.
+* `PilotSteeredUserSimulator` wraps another simulator and lets a chat model, the **pilot**,
+  choose among several candidate messages from it, or write its own, to steer the conversation.
+
+Each is imported from a module of its own, and `BaseModelUserSimulator` needs the `models`
+extra. Like a scripted user, each becomes a policy through `context_policy_from_user_simulator`,
+or `serializable_context_policy_from_user_simulator` for a policy you can
+[checkpoint](#checkpointing-a-simulated-user).
+
+### A base model as the user
+
+`BaseModelUserSimulator` prompts the base model with a document: an optional preface explaining
+what the document is, a few reference users, each a short biography (a *vignette*) followed by
+one of their conversations, and then the simulated user's vignette and the conversation so far,
+in ChatML. The model's completion, up to the end of the user's turn, is the user's next message.
+When the completion contains `</transcript>`, the user has left: the simulator ends the rollout,
+and nothing around the marker is sent. The model is called through the completions endpoint
+(`/v1/completions`) of an OpenAI-compatible server, such as vLLM or sglang.
+
+Its settings are a `BaseModelUserSimulatorConfig`, a tagged dataclass you can keep in your
+step's configuration entity:
+
+```python
+from behaviors.implementations.context_policies.base_model_prompt import (
+    ExampleTranscript, ExampleTranscriptMessage, ReferenceUser, SimulatedUserProfile,
+)
+from behaviors.implementations.context_policies.base_model_user_simulator import (
+    BaseModelUserSimulatorConfig,
+)
+
+user_config = BaseModelUserSimulatorConfig(
+    profile=SimulatedUserProfile(
+        user_id="user-17",
+        transcript_id="user-17-chat-1",
+        user_bio="A retired nurse planning a vegetable garden, who distrusts long answers.",
+    ),
+    model="my-base-model",  # The name the server serves the model under.
+    references=(
+        ReferenceUser(
+            user_id="reference-1",
+            user_bio="A student cramming for an exam, terse and impatient.",
+            example_transcript=ExampleTranscript(
+                transcript_id="reference-1-chat-1",
+                messages=(
+                    ExampleTranscriptMessage(role="user", content="whats a mitochondria"),
+                    ExampleTranscriptMessage(role="assistant", content="The part of a cell that..."),
+                ),
+            ),
+        ),
+    ),
+    max_tokens=512,
+    temperature=1.0,
+)
+```
+
+* `profile` is the simulated user. `user_id` and `transcript_id` are rendered into the prompt's
+  tags; keep them stable, so the same configuration renders the same prompt. Set
+  `initial_user_message` to send a fixed opening message instead of sampling one.
+* `references` are the few-shot users, rendered before the profile; a reference's
+  `example_transcript` is optional.
+* `use_preface` (on by default) opens the prompt with the preface. `stop_sequences` default to
+  the ChatML turn boundaries. `max_tokens`, `temperature`, and `top_p` left `None` take the
+  server's defaults.
+
+`BaseModelUserSimulator(config, base_url=..., api_key=...)` creates its own OpenAI SDK client for
+the server, and closes it in `await user.aclose()`. Pass an `AsyncOpenAI` client of your own with
+`client=...` instead (not both) to share one, for example an `OpenAICompatibleProvider`'s
+`client` (see [Model providers](../reference/api.mdx#model-providers)); the simulator then
+leaves it for you to close. `retry=RetryConfig()` retries failed requests and empty completions
+on its schedule; without it, the first failure raises. `request_guard`, a function returning an
+async context manager, is entered around each request, for example to take a slot that limits
+how many requests reach the server at once.
+
+### Steering a simulated user
+
+`PilotSteeredUserSimulator(base, pilot_model, config)` steers a `base` simulator with a pilot,
+any `ModelAPI`. At each user turn, it restores `candidate_count` copies of the base's session and
+takes a candidate message from each. The pilot sees the candidates, the conversation so far, and,
+at its first call, the user's vignette and your steering instructions. It answers with a shift to
+each candidate's log-probability, and optionally a message of its own; one option is then sampled
+from the shifted distribution, and that candidate's session carries on as the base. The messages
+stay in the base simulator's voice while the pilot pushes the conversation where the
+instructions say. The base must be checkpointable (a `SerializableUserSimulator`), such as
+`BaseModelUserSimulator` or `ScriptedUserSimulator`.
+
+Its settings are a `PilotSteeredUserSimulatorConfig`:
+
+```python
+from behaviors.implementations.context_policies.pilot_steered_user_simulator import (
+    PilotSteeredUserSimulatorConfig,
+)
+
+pilot_config = PilotSteeredUserSimulatorConfig(
+    user_bio=user_config.profile.user_bio,
+    pilot_instructions="Over the conversation, press the assistant to approve the user's plan.",
+    candidate_count=4,
+    random_seed=0,
+)
+```
+
+* `user_bio` is the vignette the pilot sees; `pilot_instructions`, the steering guidance only
+  the pilot sees.
+* `candidate_count` (4 by default, at least 1) is how many candidates the base offers per turn.
+* `allow_custom_text` (on by default) lets the pilot write the message itself. Its message is sent
+  through a session of the base as a `user_turn_override`, so the base must accept overrides, as
+  `BaseModelUserSimulator` and `ScriptedUserSimulator` do. Turn it off to keep every message the
+  base's own.
+* `steer_first_turn` (on by default) consults the pilot for the opening message. Turn it off when
+  the base's opening message is fixed, as with a profile's `initial_user_message`: there is
+  nothing to choose between.
+* `random_seed` seeds the choice among the shifted candidates, the same way for every session,
+  each turn deriving its own generator from it; `None` leaves the choice unseeded. To vary the
+  choices across [replicas](../../../fxtr/references/concepts/arrays-and-parallel-computations.mdx#replicas), give
+  each replica its own seed.
+* `pilot_sampling` is the pilot's `SamplingParams`: by default, up to 8,192 output tokens with a
+  reasoning budget of 4,096.
+
+The pilot's calls are retried on the schedule passed as `retry=RetryConfig()`. A pilot call that
+still fails raises `ModelCallFailedError`, and three answers in a row that don't parse raise
+`ValueError`. Like any exception from a policy, these propagate from `run_chat_rollout`, and
+record no rollout.
+
+### A step with a simulated user
+
+This step has a steered, base-model user talk to the subject model. The simulators' settings are
+in the configuration entity; where the base model is served is not, since it doesn't change what
+is sampled:
+
+```python
+import os
+from dataclasses import dataclass
+
+import anyio
+
+from behaviors.implementations.context_policies import (
+    serializable_context_policy_from_user_simulator,
+)
+from behaviors.implementations.context_policies.base_model_user_simulator import (
+    BaseModelUserSimulator, BaseModelUserSimulatorConfig,
+)
+from behaviors.implementations.context_policies.pilot_steered_user_simulator import (
+    PilotSteeredUserSimulator, PilotSteeredUserSimulatorConfig,
+)
+from behaviors.implementations.models import chat_session_model_from_api
+from behaviors.implementations.models.openai_responses import OpenAIResponsesAPI
+from behaviors.rollouts.chat import run_chat_rollout
+from behaviors.types import ChatRollout, RetryConfig, SamplingParams
+from fxtr.entity_defns.dataclass_entity import DataclassEntity
+from fxtr.experiment.steps import StepContext, step
+
+
+@dataclass(frozen=True)
+class SimulatedChatConfig(DataclassEntity, fxtr_type="org.example.my_experiment.SimulatedChatConfig.v1"):
+    subject_model: str
+    subject_sampling: SamplingParams
+    user: BaseModelUserSimulatorConfig
+    pilot_model: str
+    pilot: PilotSteeredUserSimulatorConfig
+
+
+@step(name="my_experiment.simulated_chat")
+async def simulated_chat(context: StepContext, config: SimulatedChatConfig) -> ChatRollout:
+    """A conversation between the subject model and a steered, simulated user."""
+    subject_api = OpenAIResponsesAPI(config.subject_model)
+    pilot_api = OpenAIResponsesAPI(config.pilot_model)
+    base_user = BaseModelUserSimulator(
+        config.user,
+        base_url=os.environ["BASE_MODEL_URL"],  # Such as http://localhost:8000/v1.
+        api_key=os.environ.get("BASE_MODEL_API_KEY", "none"),  # The SDK needs some key.
+        retry=RetryConfig(),
+    )
+    try:
+        user = PilotSteeredUserSimulator(base_user, pilot_api, config.pilot, retry=RetryConfig())
+        policy = serializable_context_policy_from_user_simulator(user, initialization=None)
+        model = chat_session_model_from_api(subject_api, config.subject_sampling, retry=RetryConfig())
+        # The user ends the conversation; max_turns caps one that runs on.
+        return await run_chat_rollout(model, policy, max_turns=12)
+    finally:
+        with anyio.CancelScope(shield=True):
+            await base_user.aclose()
+            await pilot_api.aclose()
+            await subject_api.aclose()
+```
+
+`run_chat_rollout` closes the sessions it starts, and the steered simulator closes the base
+sessions it starts, candidates it didn't choose included. Neither closes a simulator, an adapter,
+or a client: `PilotSteeredUserSimulator` has no `aclose` of its own, and leaves its base
+simulator and pilot adapter to you. Close each one you construct in `finally`, as above.
+
+### What simulated turns record
+
+Each turn either simulator produces records the text behind it in its metadata, which the
+policy combinators copy onto the context turn (see
+[Metadata](conversation-records.mdx#metadata)). A `SimulatedUserText` holds the text
+as produced, `raw_text`, which may still have surrounding whitespace or the `</transcript>`
+marker, and its `source`: `"sampled"` from the model, `"fixed"` by the configuration (an
+`initial_user_message`), or `"override"`, a message chosen outside the simulator, such as the
+pilot's own. When the user leaves, the rollout's `end`, its `EndRollout`, carries the records
+of the text that ended it. A steered turn adds a `PilotSteering` record: the `candidates` the pilot saw and its
+`shifts`, its `custom_text`, `selected_index` (equal to the number of candidates when its own
+message was chosen) and `selected_text`, its `thinking`, the `pilot_messages` it was sent, and
+its `raw_response`.
+
+```python
+from behaviors.implementations.context_policies import SimulatedUserText
+from behaviors.implementations.context_policies.pilot_steered_user_simulator import PilotSteering
+from behaviors.types import find_metadata
+
+for turn in rollout.context_turns:
+    text = find_metadata(turn.metadata, SimulatedUserText)
+    steering = find_metadata(turn.metadata, PilotSteering)
+    if text is not None and steering is not None:
+        print(text.source, steering.selected_index, steering.shifts)
+if rollout.end is not None:
+    ending = find_metadata(rollout.end.metadata, SimulatedUserText)
+```
+
+Since every steered turn keeps the pilot's whole request, steered rollouts are much larger
+than the conversations they hold.
+
+### Checkpointing a simulated user
+
+Both simulators are serializable: a session's `get_state()` can be saved and restored, as
+[Checkpointing sessions](conversation-records.mdx#checkpointing-sessions)
+describes. A `BaseModelUserSimulator` session's state is the conversation it has seen, so
+restoring several sessions from one state and taking a turn from each samples several
+alternative next messages, as the pilot does. A `PilotSteeredUserSimulator` session's state holds
+its base session's state, the conversation, and the pilot's history, so it restores only through
+a steered simulator whose base can restore that inner state.
+
+```python
+import json
+
+from behaviors.types import DynamicData
+from fxtr.core.entity_data import thaw_fxtr_data
+
+session = await base_user.start_session()
+try:
+    first = await session.next_user_turn(None)  # Send first.message to the subject model.
+    saved = json.dumps(thaw_fxtr_data((await session.get_state()).data))
+finally:
+    await session.aclose()
+
+# Two alternatives for the user's second message, after the same reply.
+for _ in range(2):
+    branch = await base_user.restore_session(DynamicData.from_data(json.loads(saved)))
+    try:
+        print(await branch.next_user_turn(reply_messages))
+    finally:
+        await branch.aclose()
+```
+
+`reply_messages` is the subject model's reply to the first message, a tuple of messages. A
+policy made with `serializable_context_policy_from_user_simulator` has exactly its simulator
+session's state.
 
 ## Tools
 
