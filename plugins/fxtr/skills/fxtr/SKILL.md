@@ -131,6 +131,27 @@ before [adding one](references/reference/renderers.mdx#adding-a-package-to-a-pro
 * **Keep the viewer running** across launches and renderer edits. It rebuilds the renderers when
   their sources change, and the open viewer switches to them in place, so never ask the user to
   reload or restart it.
+* **Link the user to what you are pointing at.** The viewer's URL holds the job, the level shown,
+  the slice, and the open panels, so instead of describing where to click, give the user a link:
+  the viewer's URL (the one `fxtr view` printed, also saved in `.fxtr/viewer.json` within the project), then `#` and `&`-separated parts.
+
+  ```
+  http://127.0.0.1:8000/#job=<job id>&w=flowchart(/outer,model=sonnet)&slice=(prompt=3)&card=judge&p=table(/outer/judge,model=sonnet)&p=.output.transcript
+  ```
+
+  `job` is the job's ID (left out, the newest job). `w` is the workflow invocation shown (left
+  out, the root's trace): `trace`, `flowchart`, or the id of an `InvocationPanel` renderer
+  of that workflow, applied to its step path from the root, with the keys of the mapped workflows
+  on the way. `slice` picks dim values for every card and panel. `card` names a step of that workflow (or
+  `return`, what it returned) whose card to scroll to. Each `p` opens a panel, in order,
+  each following the one before it; `pin` opens one that stays as it is. A panel is an address,
+  a view applied to a location and params: the view is `table`, `invocation`, `tree`, `code`, a
+  renderer's or page's id, or nothing for the default; the location is a step path from the root
+  (`/outer/judge`), or `cid:<cid>` for an entity, then a field path (`.output.transcript`,
+  `.inputs.prompt`, `[2]` for a list item); params bind dims and the params a view declares, by
+  name, as bare values (`3`, `sonnet`) or JSON (`"two words"`, `{"message":2}`). After the first
+  panel, a location may be relative to the panel before it: `.field…` below it, `../step` a
+  sibling. Percent-encode only spaces, `%`, `&`, `#`, `+`, and quotes.
 
 ### Reading the documentation
 

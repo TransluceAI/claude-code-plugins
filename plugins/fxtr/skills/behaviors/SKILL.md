@@ -14,16 +14,17 @@ The pages below are its documentation. Read the ones a task needs before writing
 
 ## Where to read
 
-| Task                                                                                                                           | Read                                                                               |
-| ------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
-| Add behaviors to a project; hold a conversation, judge outputs, and summarize verdicts in fxtr steps; test without credentials | [Calling language models](references/guides/language-models.mdx)                   |
-| Pick a provider, an adapter, and an exact model ID                                                                             | [Choosing models](references/guides/choosing-models.mdx)                           |
-| Script users or simulate them with models (a base model, steered by a pilot), offer tools, or write a custom conversation flow | [Policies and tools](references/guides/policies-and-tools.mdx)                     |
-| Rollout statuses and `max_turns`, failures, retries, streaming                                                                 | [Rollout outcomes and retries](references/guides/rollout-outcomes.mdx)             |
-| Messages and content, stored records, transcripts, conversations in the viewer, checkpoints                                    | [Conversation records and checkpoints](references/guides/conversation-records.mdx) |
-| Run Docent readings, or convert records for Docent                                                                             | [Docent readings](references/guides/docent-readings.mdx)                           |
-| Choose a layer; imports, adapters and their options, model providers, sampling and reasoning settings, requests and responses  | [API overview](references/reference/api.mdx)                                       |
-| Steps, workflows, arrays, launching jobs, and the step cache                                                                   | the adjacent [fxtr skill](../fxtr/SKILL.md)                                        |
+| Task                                                                                                                                                                                  | Read                                                                               |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Add behaviors to a project; hold a conversation, judge outputs, and summarize verdicts in fxtr steps; test without credentials                                                        | [Calling language models](references/guides/language-models.mdx)                   |
+| Pick a provider, an adapter, and an exact model ID                                                                                                                                    | [Choosing models](references/guides/choosing-models.mdx)                           |
+| Script users or simulate them with models (a base model, steered by a pilot), offer tools, or write a custom conversation flow                                                        | [Policies and tools](references/guides/policies-and-tools.mdx)                     |
+| What each provider's dialect carries, adaptation losses and refusing them, structured output (`response_format`, strict tools, tool output schemas), refusals and other stops, codecs | [Dialects and adaptation](references/guides/dialects-and-adaptation.mdx)           |
+| Rollout statuses and `max_turns`, failures, retries, streaming                                                                                                                        | [Rollout outcomes and retries](references/guides/rollout-outcomes.mdx)             |
+| Messages and content, stored records, transcripts, conversations in the viewer, checkpoints                                                                                           | [Conversation records and checkpoints](references/guides/conversation-records.mdx) |
+| Run Docent readings, or convert records for Docent                                                                                                                                    | [Docent readings](references/guides/docent-readings.mdx)                           |
+| Choose a layer; imports, adapters (including Gemini and OpenRouter) and their options, model providers, sampling, reasoning and speed settings, requests and responses                | [API overview](references/reference/api.mdx)                                       |
+| Steps, workflows, arrays, launching jobs, and the step cache                                                                                                                          | the adjacent [fxtr skill](../fxtr/SKILL.md)                                        |
 
 ## Best practices
 

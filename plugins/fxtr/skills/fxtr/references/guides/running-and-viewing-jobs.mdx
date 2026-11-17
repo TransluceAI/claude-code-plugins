@@ -127,7 +127,9 @@ The first sentence of each step's and workflow's docstring is what appears on it
 those as short imperative sentences that tell a reader what the operation does, such as "Compute
 mean scores across judges." Leave out edge cases and what the step is mapped over, which the card
 already shows. For progress worth reading while a step runs, write log lines with
-`context.log(...)`.
+`context.log(...)`, or publish the result so far with `context.preview(...)`, which the step's
+panel shows as it changes
+(see [Workflows and steps](../concepts/workflows-and-steps.mdx#the-context-argument)).
 
 `EXPERIMENT.md`, at the project root, describes the experiment for someone reading its results:
 the question it asks, what it compares or measures and why, and how each score or judgment is

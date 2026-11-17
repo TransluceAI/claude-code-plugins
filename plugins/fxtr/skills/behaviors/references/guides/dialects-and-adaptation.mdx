@@ -1,0 +1,240 @@
+---
+title: "Dialects and adaptation"
+description: "How a request reaches each provider: the dialects the adapters speak, what an adapter changes to send a request and how to refuse it, structured output, responses that are not answers, and the codecs behind the adapters."
+---
+
+behaviors describes every model call in one vocabulary: a `ModelRequest` goes in, and a
+`ModelResponse` or `ModelCallFailure` comes out, whichever provider serves it. Each provider
+adapter speaks one **dialect**, the wire schema of one provider API, and converts between the
+vocabulary and that dialect with a **codec**. Not every dialect can carry everything a request
+can say, so before sending, the adapter fits the request to its dialect and model, and reports
+each change on the result.
+
+This page is about that boundary: which dialect each adapter speaks, what adaptation changes and
+how to refuse it, structured output, and how to tell an answer from a refusal. The
+[API overview](../reference/api.mdx#provider-adapters) covers constructing the adapters.
+
+## Dialects
+
+A dialect names an API schema, not a vendor. A model served through OpenRouter is called over
+Chat Completions whoever made it, and a local server may speak any dialect it implements.
+
+| Dialect                   | Adapters                               | Served by                                                                       |
+| ------------------------- | -------------------------------------- | ------------------------------------------------------------------------------- |
+| `anthropic_messages`      | `AnthropicMessagesAPI`                 | Anthropic, and services that implement the Messages API (pass their `base_url`) |
+| `openai_responses`        | `OpenAIResponsesAPI`                   | OpenAI                                                                          |
+| `openai_chat_completions` | `OpenAICompatibleAPI`, `OpenRouterAPI` | OpenAI, OpenRouter, and compatible servers such as vLLM                         |
+| `gemini_generate_content` | `GeminiGenerateContentAPI`             | Google's Gemini API                                                             |
+
+An adapter's `dialect` and `model_id` properties say what it serves. Where a model is offered in
+several dialects, the dialect decides what a request can carry. For example, only OpenAI
+Responses and Gemini declare a tool's output schema, and Chat Completions can't return OpenAI's
+encrypted reasoning to the model, except through OpenRouter, which carries reasoning state of its
+own.
+
+A conversation can change provider partway through, and its context keeps the reasoning blocks
+of earlier turns. A provider accepts back only reasoning state it issued for that model, so an
+adapter leaves out reasoning blocks that carry another provider's state, and the model reasons
+afresh on those turns.
+
+## What an adapter changes
+
+An adapter changes a part of a request its dialect or model can't carry as asked: it leaves the
+part out, sends its nearest equivalent, or sends it without enforcing it. Both a
+`ModelResponse` and a `ModelCallFailure` list every change in `adaptation_losses`, one
+`RequestLoss` per change, with:
+
+* `code`, a short, stable name for the kind of change, such as `stop_sequences`;
+* `detail`, what exactly changed;
+* `semantic`, `True` when the model was asked something different, and `False` when only cost,
+  latency, or caching changed.
+
+A request the dialect carries whole has no losses. Some common codes:
+
+| Code                                                                               | Change                                                                                                                                        |
+| ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stop_sequences`                                                                   | Stop sequences left out (OpenAI Responses has none).                                                                                          |
+| `reasoning_budget`                                                                 | A reasoning budget sent as the nearest effort level (the OpenAI dialects have no budget).                                                     |
+| `reasoning_effort`                                                                 | An effort level the API doesn't offer sent as the nearest one, such as Gemini's `max` as `high`.                                              |
+| `foreign_reasoning`                                                                | Reasoning blocks with another provider's state left out.                                                                                      |
+| `speed`                                                                            | A speed tier left out, for a dialect without one.                                                                                             |
+| `cache_breakpoint`                                                                 | Prompt-cache breakpoints dropped or their TTL shortened, where a dialect has no breakpoints or limits them (Anthropic keeps the latest four). |
+| `response_format_*`, `response_schema_*`, `json_mode`                              | A response format changed (see [Structured output](#structured-output)).                                                                      |
+| `tool_strict_*`, `tool_schema_weakened`, `tool_output_schema`, `tool_result_shape` | A tool's schema or strictness changed.                                                                                                        |
+
+The set is open: a code names each new kind of change an adapter makes, and a code always has the
+same `semantic` value. Match codes you act on, and log the rest.
+
+An adapter also learns from a model's rejections. When a model refuses a request spelled one way
+that it would take spelled another (a Gemini model that refuses `thinkingBudget: 0` but takes the
+`MINIMAL` thinking level, say), the adapter resends it respelled within the same call, whatever
+retry schedule the caller set. Each fix is tried at most once per call, but one call can trigger
+several, so it can be resent more than once. Once a respelled request succeeds, the adapter
+keeps that spelling for its later requests to the model and logs a warning once. A fix that
+changes what the model is asked, or how the request is served, is listed in
+`adaptation_losses` like any other change; one that only respells the request with the same
+meaning (Anthropic's two spellings of thinking off) adds nothing there. `AnthropicMessagesAPI`,
+`OpenAIResponsesAPI`, and `GeminiGenerateContentAPI` have fixes of this kind.
+
+In a rollout, a session of `chat_session_model_from_api` records each call's `ModelResponse` in
+the model turn's metadata, so the losses are stored with the conversation:
+
+```python
+from behaviors.types import ModelResponse, find_metadata
+
+for turn in rollout.model_turns:
+    response = find_metadata(turn.metadata, ModelResponse)
+    if response is not None:
+        for loss in response.adaptation_losses:
+            print(loss.code, loss.semantic, loss.detail)
+```
+
+### Refusing changes in meaning
+
+By default every change is made and reported. To have a call fail instead of being sent with a
+changed meaning, set the request's `adaptation_policy`:
+
+```python
+from behaviors.types import AdaptationPolicy, ModelCallFailure, ModelRequest
+
+request = ModelRequest(
+    ...,
+    adaptation_policy=AdaptationPolicy(semantic_changes="refuse"),
+)
+result = await api.generate(request)
+if isinstance(result, ModelCallFailure) and result.category == "adaptation_refused":
+    refused = [loss for loss in result.proposed_adaptation_losses if loss.semantic]
+```
+
+`semantic_changes` is `"allow"` (the default) or `"refuse"`. Changes that affect only cost,
+latency, or caching are made under either. A refused call returns a `ModelCallFailure` with
+category `adaptation_refused`: its `proposed_adaptation_losses` are the changes that were not
+made, the semantic ones among them being what the policy refused, and its `adaptation_losses` the
+changes made to what was sent, if anything was. Usually nothing was sent, and
+`provider_http_status` is `None`; when a model rejected the request and the fix it learned would
+change the meaning, the provider's status and message are kept.
+
+The policy is part of the request, so it reaches the adapter through retries and wrappers, and a
+stored request records what the call allowed. A refusal recurs on every attempt, which is why
+`adaptation_refused` is not among the categories retried by default (see
+[Failures and retries](rollout-outcomes.mdx#failures-and-retries)). The adapters
+listed above read the policy; any other `ModelAPI` sends the request as it is, and may ignore
+`response_format` too.
+
+## Structured output
+
+Set a request's optional `response_format` to constrain the model's answer:
+
+* `ResponseFormatJsonSchema(schema=..., strict=True)` asks for JSON matching `schema`.
+  `strict=True` asks the provider to enforce it; `strict=False` offers it as guidance. It also
+  takes an optional `name` and `description`, which OpenAI uses.
+* `ResponseFormatJsonObject()` asks for one valid JSON value of any shape (JSON mode).
+* `ResponseFormatText()` asks for plain text explicitly, which is also what `None` means.
+
+A schema is JSON Schema, draft 2020-12 unless its `$schema` names another. Each provider enforces
+its own subset of JSON Schema, and the adapters fit a schema to it before sending:
+
+| Provider                                | Response schema                                                                                                                                                                                                                                                                                                                                                                          | JSON mode                     |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
+| Anthropic                               | Always enforced: an advisory schema is enforced anyway (`response_format_strengthened`). Keywords Anthropic can't enforce move into descriptions (`response_schema_weakened`), and objects that allowed extra keys are closed (`response_schema_strengthened`). A schema Anthropic would reject even so, such as `{}` or a recursive reference, is left out (`response_format_dropped`). | None: left out (`json_mode`). |
+| OpenAI (Responses and Chat Completions) | Enforced when strict. A strict schema that breaks OpenAI's strict-mode rules is sent without strict mode (`response_format_unenforced`); keywords OpenAI rejects move into descriptions (`response_schema_weakened`); a root that isn't an object is left out (`response_format_dropped`).                                                                                               | Sent.                         |
+| Gemini                                  | Always enforced: an advisory schema is enforced anyway (`response_format_strengthened`). Keywords Gemini rejects move into descriptions, and those it accepts without enforcing are sent and recorded (both `response_schema_weakened`).                                                                                                                                                 | Sent.                         |
+
+An answer matches its schema only when the response stopped with `StopEndTurn`. A refusal, a
+content filter, or the token limit can leave partial, empty, or nonconforming text, and a schema
+the adapter weakened is no longer fully enforced. Check how the response ended (see
+[When a response is not an answer](#when-a-response-is-not-an-answer)) and validate the answer
+yourself before using it.
+
+### Tools
+
+A tool's `strict` asks the same of the model's calls to it: `True`, `False`, or `"auto"`.
+`"auto"` is OpenAI's meaning: strict when OpenAI's strict-mode rules accept the tool's input
+schema. OpenAI Responses sends it as it is, and every other adapter resolves it by those same
+rules, whatever its own provider could enforce; a schema with an optional property, for
+example, breaks OpenAI's rules, so the tool is sent non-strict to Anthropic too. Anthropic and
+OpenAI send a strict tool whose schema they can't enforce as non-strict
+(`tool_strict_unenforced`). Gemini validates
+calls for the whole request or not at all: one strict tool makes every tool strict
+(`tool_strict_strengthened`), and a required or forced tool call leaves them all unenforced.
+
+A tool's `output_schema` describes what the tool returns, and its results are then that JSON
+value as text. OpenAI Responses and Gemini send it to the model; Anthropic and Chat Completions
+have no place for it (`tool_output_schema`). Gemini also leaves out the output schema of a tool
+when one of its results in the context isn't a JSON object (`tool_result_shape`). It checks only
+that: a JSON object that doesn't match the schema keeps it, with no loss reported.
+
+To get a schema enforced exactly as written or not at all, refuse semantic changes, as
+[above](#refusing-changes-in-meaning): every change to a response format or to a strict tool's
+schema is semantic.
+
+## When a response is not an answer
+
+A response's text is a finished answer only when its `stop_reason` is `StopEndTurn` or
+`StopStopSequence`. The other stops:
+
+* `StopToolUse`: the model stopped to call tools.
+* `StopMaxTokens`: the output reached the token limit.
+* `StopRefusal`: the model or the provider's safety system declined. Any text the model wrote is
+  kept, so the content can be empty, partial, or the model's explanation. `provider_reason` is the
+  provider's own reason (`"refusal"`, `"content_filter"`, `"SAFETY"`); `complete` is `True` when
+  the response is the model's whole refusal, `False` when it was cut off or blocked, and `None`
+  when the provider doesn't say; `detail` holds whatever more the provider said, such as
+  Anthropic's policy category or Gemini's safety ratings.
+* `StopContentFilter`: the provider withheld output for what it contained rather than declining
+  the request, such as Gemini's recitation check.
+* `StopOther`: any other reason.
+
+OpenAI reports a refusal as a refusal only under a response format; without one, a model that
+declines does so in ordinary text, which ends with `StopEndTurn` like any answer.
+
+Check how a response ended before reading it:
+
+```python
+response.raise_for_stop_reason()  # UnexpectedStopError unless it stopped with an answer
+```
+
+`raise_for_stop_reason(allow=(StopEndTurn, StopToolUse))` also accepts tool calls. The error's
+`stop_reason` is the stop, and its message names what the provider said.
+
+A refusal or a content filter after the request was accepted is a response, not a failure. A
+prompt a provider rejects with an error before generating, as OpenAI does, is a
+`ModelCallFailure` of category `content_filter` instead.
+
+## Codecs
+
+A codec converts between the vocabulary and one dialect, with no I/O and no provider SDK. The
+codecs are in `behaviors.implementations.dialects`: `AnthropicMessagesCodec`,
+`OpenAIResponsesCodec`, `OpenAIChatCompletionsCodec`, and `GeminiGenerateContentCodec(model=...)`.
+An adapter's `codec` property returns the one it uses, with the adapter's configuration.
+
+The model side of a codec, the `ModelSideCodec` protocol in `behaviors.interfaces.dialect_codecs`,
+works in three steps: `adapt_request(model, request)` returns an `AdaptedRequest`, the fitted
+`request` and its `losses`; `encode_request(model, request, streaming=...)` renders a fitted
+request exactly as it is, as an `EncodedRequest` with its `path`, `body`, `query`, and `headers`
+(credentials are the client's); and `decode_response`, `sse_decoder`, and `decode_failure` parse
+what the provider sends back. Since a codec needs no credentials, it shows what a request would
+send without calling anyone:
+
+```python
+from behaviors.implementations.dialects import GeminiGenerateContentCodec
+
+codec = GeminiGenerateContentCodec(model=model_id)
+adapted = codec.adapt_request(model_id, request)
+for loss in adapted.losses:
+    print(loss.code, loss.detail)
+wire = codec.encode_request(model_id, adapted.request, streaming=True)
+print(wire.path, wire.query, wire.body)
+```
+
+The adapters always stream, even from `generate`, so `streaming=True` renders what they send:
+here `/v1beta/models/{model_id}:streamGenerateContent` with the query `alt=sse`.
+
+The adapter adds what it has learned from the model's rejections on top, so a live call can
+report a change this preview doesn't.
+
+To serve a provider the adapters don't cover, first check whether it implements one of these
+dialects, and point that adapter's `base_url` at it. A new dialect needs a codec of its own,
+implementing `ModelSideCodec`, and a `ModelAPI` that sends what it encodes;
+`behaviors.implementations.dialects.codec_utils` has helpers for streamed responses, JSON bodies,
+and reading a reasoning state as the codec's own type (`own_reasoning_state`).

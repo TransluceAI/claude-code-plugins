@@ -280,7 +280,21 @@ other. A `StepContext` and a `WorkflowContext` both let you:
 A `WorkflowContext` additionally has the scheduling operations: `run_step`,
 `run_child_workflow`, `add_source_array` for introducing fixed data into the graph, and `combine`
 and `stack` for putting handles side by side. A `StepContext` exposes the step's `cache_address`, the
-address its result is stored at.
+address its result is stored at, and `preview`:
+
+* **Preview.** `context.preview(value)` publishes a value showing the result the step is producing,
+  which the viewer shows in the step's panel while it runs. Pass a
+  [partial value](entities-and-custom-types.mdx#partial-values) of what the step will
+  return, or any tagged dataclass. Each call replaces the last, only the latest is kept, and it
+  is saved at most a few times a second, so calling it on every streamed token is fine. A step
+  that fails or is stopped keeps its last preview; when a step completes, its result takes the
+  preview's place and the preview is deleted. When a preview costs more to build than an event
+  costs to handle, such as a long conversation assembled again on every token, pass a function of
+  no arguments returning it instead, `context.preview(lambda: draft.value)`: fxtr calls it only
+  when it saves the preview, and once more if the step fails or is stopped. A preview is not the
+  step's result: nothing reads it but the viewer, which shows it with the value's renderer when
+  the project registers one for previews, else as the same data tree as a finished entity (see
+  [Live previews](../reference/renderers.mdx#live-previews)).
 
 ### Registered names
 

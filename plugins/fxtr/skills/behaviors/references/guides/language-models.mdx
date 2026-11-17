@@ -5,7 +5,8 @@ description: "Use the behaviors library to hold conversations and judge outputs 
 
 **behaviors** is a Python library for calling language models from fxtr experiments. It provides:
 
-* model adapters for Anthropic, OpenAI, and OpenAI-compatible services;
+* model adapters for Anthropic, OpenAI, Google's Gemini API, OpenRouter, and OpenAI-compatible
+  services;
 * conversation sessions and **context policies**, which decide what the model sees next:
   scripted or model-simulated user messages, tool results, or custom logic;
 * retries for rate limits and server errors;
@@ -22,7 +23,7 @@ uv add "behaviors[models]"
 
 Then commit the updated `pyproject.toml` and `uv.lock`.
 
-Set your provider's API key, `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, in the project's `.env`
+Set your provider's API key, such as `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, in the project's `.env`
 (see [Project configuration](../../../fxtr/references/reference/project-configuration.mdx#env)) or in the environment.
 
 | Provider                           | Adapter                                                                              |
@@ -30,11 +31,13 @@ Set your provider's API key, `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, in the pro
 | OpenAI Responses                   | `from behaviors.implementations.models.openai_responses import OpenAIResponsesAPI`   |
 | Anthropic Messages                 | `from behaviors.implementations.models.anthropic import AnthropicMessagesAPI`        |
 | OpenAI Chat Completions-compatible | `from behaviors.implementations.models.openai_compatible import OpenAICompatibleAPI` |
+| OpenRouter                         | `from behaviors.implementations.models.openrouter import OpenRouterAPI`              |
+| Gemini API                         | `from behaviors.implementations.models.gemini import GeminiGenerateContentAPI`       |
 
 Construct an adapter with the provider's model ID, such as `OpenAIResponsesAPI("gpt-6-luna")`.
 [Choosing models](choosing-models.mdx) shows how to find the IDs your account can
 use, and the [API overview](../reference/api.mdx#provider-adapters) covers the adapters'
-other options, such as `base_url` for a compatible service.
+other options and their API keys, such as `base_url` for a compatible service.
 
 ## A conversation as a step
 
@@ -315,10 +318,11 @@ mean_scores = context.run_step("mean_scores", mean_score, {"verdicts": verdicts}
 
   <Accordion title="Sampling settings vary by provider">
     `SamplingParams` covers `max_tokens`, `temperature`, `top_p`, `stop_sequences`, `reasoning`,
-    and provider-specific `extra`. Which settings take effect depends on the adapter and model:
-    for example, `OpenAIResponsesAPI` doesn't apply `stop_sequences`. Leave a setting unset
-    unless your adapter and model support it. See
-    [Sampling settings](../reference/api.mdx#sampling-settings).
+    `speed`, and provider-specific `extra`. Which settings take effect depends on the adapter and model:
+    for example, `OpenAIResponsesAPI` doesn't apply `stop_sequences`, and the result's
+    `adaptation_losses` lists that change. Leave a setting unset unless your adapter and model support
+    it. See [Sampling settings](../reference/api.mdx#sampling-settings) and
+    [What an adapter changes](dialects-and-adaptation.mdx#what-an-adapter-changes).
   </Accordion>
 
   <Accordion title="Test without credentials">

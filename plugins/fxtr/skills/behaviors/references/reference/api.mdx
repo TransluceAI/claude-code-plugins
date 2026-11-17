@@ -11,22 +11,23 @@ fxtr steps.
 
 ## Choose a layer
 
-| Need                                                 | API                                                                                                                                                        |
-| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| One model request, no conversation state             | `ModelAPI.generate(ModelRequest)`, from `behaviors.interfaces.model_apis`; returns a `ModelResponse` or a `ModelCallFailure`.                              |
-| Incremental output from a request                    | `StreamingModelAPI.generate_with_events(request, callback)`.                                                                                               |
-| Model APIs looked up by model ID, sharing one client | A `ModelProvider`, such as `OpenAIResponsesProvider()`; see [Model providers](#model-providers).                                                           |
-| One request with a retry schedule                    | `generate_with_retries(api, request, retry=..., failure_categories_to_retry=...)`, from `behaviors.implementations.models`.                                |
-| A conversation with accumulated messages             | `chat_session_model_from_api(api, sampling, retry=...)`, from `behaviors.implementations.models`, which creates an independent session per conversation.   |
-| A model against an environment or a simulated user   | `run_chat_rollout(model, context_policy, ...)`, from `behaviors.rollouts.chat`; returns a `ChatRollout`.                                                   |
-| Fixed user prompts                                   | `ScriptedUserSimulator(messages=(...))`, made a policy with `context_policy_from_user_simulator(..., initialization=...)`.                                 |
-| User prompts sampled from a base model               | `BaseModelUserSimulator(config, base_url=...)`, from `behaviors.implementations.context_policies.base_model_user_simulator`.                               |
-| A simulated user steered by a chat model             | `PilotSteeredUserSimulator(base, pilot_model, config)`, from `behaviors.implementations.context_policies.pilot_steered_user_simulator`.                    |
-| User prompts interleaved with tool calls             | `context_policy_from_user_and_tools(user, tools, initialization=...)`.                                                                                     |
-| A first turn followed only by tool turns             | `context_policy_from_tool_policy(tools, first_turn_messages=..., initialization=...)`.                                                                     |
-| A custom or adaptive conversation                    | `context_policy_from_generator`, or a subclass of `GeneratorContextPolicy`; for checkpoints, implement the `ContextPolicy` and session protocols directly. |
-| Plain transcripts for viewers or readers             | `ChatRolloutTranscriptProjection`, from `behaviors.rollouts.chat`, with `Transcript`, `TranscriptGroup`, and `AgentRun`.                                   |
-| Docent readings                                      | `DocentReadingStep` and the conversions in `behaviors.implementations.docent`, with `behaviors[docent]`.                                                   |
+| Need                                                     | API                                                                                                                                                        |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| One model request, no conversation state                 | `ModelAPI.generate(ModelRequest)`, from `behaviors.interfaces.model_apis`; returns a `ModelResponse` or a `ModelCallFailure`.                              |
+| Incremental output from a request                        | `StreamingModelAPI.generate_with_events(request, callback)`.                                                                                               |
+| Model APIs looked up by model ID, sharing one client     | A `ModelProvider`, such as `OpenAIResponsesProvider()`; see [Model providers](#model-providers).                                                           |
+| What a request would send a provider, without sending it | A dialect codec's `adapt_request` and `encode_request`; see [Codecs](../guides/dialects-and-adaptation.mdx#codecs).                                        |
+| One request with a retry schedule                        | `generate_with_retries(api, request, retry=..., failure_categories_to_retry=...)`, from `behaviors.implementations.models`.                                |
+| A conversation with accumulated messages                 | `chat_session_model_from_api(api, sampling, retry=...)`, from `behaviors.implementations.models`, which creates an independent session per conversation.   |
+| A model against an environment or a simulated user       | `run_chat_rollout(model, context_policy, ...)`, from `behaviors.rollouts.chat`; returns a `ChatRollout`.                                                   |
+| Fixed user prompts                                       | `ScriptedUserSimulator(messages=(...))`, made a policy with `context_policy_from_user_simulator(..., initialization=...)`.                                 |
+| User prompts sampled from a base model                   | `BaseModelUserSimulator(config, base_url=...)`, from `behaviors.implementations.context_policies.base_model_user_simulator`.                               |
+| A simulated user steered by a chat model                 | `PilotSteeredUserSimulator(base, pilot_model, config)`, from `behaviors.implementations.context_policies.pilot_steered_user_simulator`.                    |
+| User prompts interleaved with tool calls                 | `context_policy_from_user_and_tools(user, tools, initialization=...)`.                                                                                     |
+| A first turn followed only by tool turns                 | `context_policy_from_tool_policy(tools, first_turn_messages=..., initialization=...)`.                                                                     |
+| A custom or adaptive conversation                        | `context_policy_from_generator`, or a subclass of `GeneratorContextPolicy`; for checkpoints, implement the `ContextPolicy` and session protocols directly. |
+| Plain transcripts for viewers or readers                 | `ChatRolloutTranscriptProjection`, from `behaviors.rollouts.chat`, with `Transcript`, `TranscriptGroup`, and `AgentRun`.                                   |
+| Docent readings                                          | `DocentReadingStep` and the conversions in `behaviors.implementations.docent`, with `behaviors[docent]`.                                                   |
 
 The guides cover the layers above the request:
 [policies and tools](../guides/policies-and-tools.mdx),
@@ -50,8 +51,9 @@ general judge: build one for your experiment from these interfaces, as the
   `SimulatedUserText`, the tool policies, and the policy combinators. The model-driven user
   simulators are in modules of their own there: `base_model_user_simulator`, with the profile
   types in `base_model_prompt`, and `pilot_steered_user_simulator`, with `PilotSteering`.
+* `behaviors.implementations.dialects` exports the dialect codecs, which need no provider SDK.
 * `behaviors.interfaces` holds the protocols: `model_apis` (including `ModelProvider`),
-  `chat_session_models`, `context_policies`, and `projections`.
+  `dialect_codecs`, `chat_session_models`, `context_policies`, and `projections`.
 * The provider adapters and their model providers are each in a module of their own (below),
   imported explicitly, because they need the provider SDKs. So does `base_model_user_simulator`.
 
@@ -74,23 +76,40 @@ other kind needs a session model that understands it. Close sessions you start y
 ## Provider adapters
 
 Install the provider SDKs with the `models` extra, `behaviors[models]`. The core types, context
-policies, and rollouts with a fake model need no SDK.
+policies, codecs, and rollouts with a fake model need no SDK.
 
-| Provider interface                               | Module                                               | Adapter                | Model provider              |
-| ------------------------------------------------ | ---------------------------------------------------- | ---------------------- | --------------------------- |
-| Anthropic Messages                               | `behaviors.implementations.models.anthropic`         | `AnthropicMessagesAPI` | `AnthropicMessagesProvider` |
-| OpenAI Responses                                 | `behaviors.implementations.models.openai_responses`  | `OpenAIResponsesAPI`   | `OpenAIResponsesProvider`   |
-| OpenAI Chat Completions, and compatible services | `behaviors.implementations.models.openai_compatible` | `OpenAICompatibleAPI`  | `OpenAICompatibleProvider`  |
+| Provider interface                               | Module                                               | Adapter                    | Model provider                  |
+| ------------------------------------------------ | ---------------------------------------------------- | -------------------------- | ------------------------------- |
+| Anthropic Messages                               | `behaviors.implementations.models.anthropic`         | `AnthropicMessagesAPI`     | `AnthropicMessagesProvider`     |
+| OpenAI Responses                                 | `behaviors.implementations.models.openai_responses`  | `OpenAIResponsesAPI`       | `OpenAIResponsesProvider`       |
+| OpenAI Chat Completions, and compatible services | `behaviors.implementations.models.openai_compatible` | `OpenAICompatibleAPI`      | `OpenAICompatibleProvider`      |
+| OpenRouter                                       | `behaviors.implementations.models.openrouter`        | `OpenRouterAPI`            | none                            |
+| Gemini API                                       | `behaviors.implementations.models.gemini`            | `GeminiGenerateContentAPI` | `GeminiGenerateContentProvider` |
+
+Each adapter speaks one provider API's wire schema, its dialect; OpenRouter is served over Chat
+Completions. [Dialects and adaptation](../guides/dialects-and-adaptation.mdx) covers what each
+dialect carries and what an adapter changes to send a request.
 
 Construct an adapter with the provider's model ID, as in `OpenAIResponsesAPI("gpt-6-luna")`;
 [Choosing models](../guides/choosing-models.mdx) shows how to find IDs. Adapters read
-credentials from the environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`). Each also takes
-`api_key` and `base_url`, for another account or a compatible service, or an SDK client of your
-own with `client=...`, but not both. An adapter closes a client it created, and leaves an
-injected client to its caller. Never store credentials in experiment inputs or entities.
+credentials from the environment: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`,
+and `GEMINI_API_KEY` (or `GOOGLE_API_KEY`). Each also takes `api_key`, and all but
+`OpenRouterAPI` take `base_url`, for another account or a compatible service; or pass a client of
+your own with `client=...` instead: the provider's SDK client, or for Gemini a `GeminiClient`
+from the same module. An SDK client must authenticate with an API key (a key given as a function,
+or an Azure AD token provider, also works). The adapters refuse a client that authenticates or
+signs requests when sending them, such as an Anthropic `credentials=` provider or a Bedrock or
+Vertex client, and an OpenAI admin key is never sent to a model endpoint. An adapter closes a
+client it created, and leaves an injected client to its caller. Never store credentials in
+experiment inputs or entities.
 
-The adapters turn off the SDKs' own retries, so that behaviors decides when a call is tried again
-(see [Rollout outcomes and retries](../guides/rollout-outcomes.mdx#failures-and-retries)).
+The adapters have no retry schedule of their own, so that behaviors decides when a failed call
+is tried again (see
+[Rollout outcomes and retries](../guides/rollout-outcomes.mdx#failures-and-retries)). The one
+exception is separate from that schedule: when a model rejects a request in a form the adapter
+knows how to fix, `AnthropicMessagesAPI`, `OpenAIResponsesAPI`, and `GeminiGenerateContentAPI`
+resend it fixed within the same call, at most once for each fix (see
+[What an adapter changes](../guides/dialects-and-adaptation.mdx#what-an-adapter-changes)).
 
 ### Adapter options
 
@@ -102,23 +121,21 @@ Each adapter also takes keyword options that apply to every request it sends.
   unset, since Anthropic requires one.
 * `final_block_cache_control`, a `CacheControl`, puts a prompt-cache breakpoint on the final
   content block of each request, when that block is non-empty text or a tool result the request
-  didn't already mark. With it, each turn of a conversation reads the cached prefix the previous
-  turn wrote, without marking messages yourself. Adding it raises `ModelError` when the request
-  would then have more than Anthropic's four breakpoints, or a 1-hour breakpoint after a 5-minute
-  one.
-* `thinking_display`, `"summarized"` (the default) or `"omitted"`, is sent with enabled thinking.
-  `"summarized"` streams summarized thinking text; `"omitted"` returns only signed, empty
-  thinking blocks. The adapter always sends it, since newer models omit thinking text unless
-  asked.
-* `fast_mode=True` asks for fast-mode inference on every request (`speed: "fast"`, with its beta
-  header). A model that doesn't offer fast mode rejects the request.
+  didn't already mark. With it, each turn of a conversation can read the cached prefix the
+  previous turn wrote, without marking messages yourself. When the request then has more than
+  Anthropic's four breakpoints, the adapter drops the earliest ones, and a 1-hour breakpoint after
+  a 5-minute one is shortened to 5 minutes; each such change is recorded as a `cache_breakpoint`
+  loss (see [What an adapter changes](../guides/dialects-and-adaptation.mdx#what-an-adapter-changes)).
 
 ```python
 from behaviors.implementations.models.anthropic import AnthropicMessagesAPI
 from behaviors.types import CacheControl
 
-api = AnthropicMessagesAPI(model_id, final_block_cache_control=CacheControl(), fast_mode=True)
+api = AnthropicMessagesAPI(model_id, final_block_cache_control=CacheControl())
 ```
+
+Whether thinking text comes back and the fast speed tier are set per request instead, with
+`ReasoningParams.summary` and `SamplingParams.speed` (see [Sampling settings](#sampling-settings)).
 
 `OpenAIResponsesAPI` and `OpenAICompatibleAPI` take `extra_body`, a dictionary added to every
 request's body; a request's `SamplingParams.extra` takes precedence over it. `OpenAICompatibleAPI`
@@ -127,6 +144,12 @@ to a service that reads them, such as OpenRouter serving an Anthropic model, and
 `max_tokens_param`, `"max_tokens"` (the default) or `"max_completion_tokens"`, the name the
 service expects for the output limit.
 
+`OpenRouterAPI` is `OpenAICompatibleAPI` set up for OpenRouter: its base URL, its key, and the
+reasoning state OpenRouter returns for models that sign or encrypt their reasoning, which it
+sends back on later turns. It takes `extra_body`, where OpenRouter's routing options go (such as
+`provider`), `forward_cache_control`, and `max_tokens_param`. `GeminiGenerateContentAPI` takes
+no options beyond its credentials.
+
 ## Model providers
 
 A `ModelProvider`, from `behaviors.interfaces.model_apis`, looks up a `ModelAPI` by model ID:
@@ -134,11 +157,12 @@ A `ModelProvider`, from `behaviors.interfaces.model_apis`, looks up a `ModelAPI`
 can't serve it. Use one where code picks models by ID as it runs, such as a harness whose main
 and helper calls name different models, or to send requests for many models through one client.
 
-Each adapter module has a provider (the table above), which builds that module's adapter for any
+Each adapter module except `openrouter` has a provider (the table above), which builds that module's adapter for any
 model ID. It takes the adapter's credentials and options, less the model ID; it builds one
 adapter per model ID, on the first lookup, and returns the same one after that; and every
 adapter it builds sends its requests through the provider's one client, its `client` property.
-Close the provider, not the adapters it built: `await provider.aclose()` closes the client if the
+`variant="openrouter"` and `reasoning_echo_field="reasoning"` set up the codec as `OpenRouterAPI`
+does. Close the provider, not the adapters it built: `await provider.aclose()` closes the client if the
 provider created it, and leaves a client passed with `client=...` to its caller. Closing an
 adapter that a provider built does nothing.
 
@@ -150,6 +174,8 @@ from behaviors.implementations.models.openai_compatible import OpenAICompatibleP
 openrouter = OpenAICompatibleProvider(
     base_url="https://openrouter.ai/api/v1",
     api_key=os.environ["OPENROUTER_API_KEY"],
+    variant="openrouter",
+    reasoning_echo_field="reasoning",
 )
 try:
     subject = openrouter.get_model_api(subject_id)
@@ -179,19 +205,48 @@ A `ModelRequest` has `context` (the messages), `tools`, `tool_choice`, `parallel
 `ModelCallFailure`; check which before reading the response's fields. In `usage`, the counts of
 cached and reasoning tokens are `None` when the provider doesn't report them.
 
+Reasoning in a response is a `ContentReasoning` block. Its `form` says what its `text` is: the
+model's own reasoning (`"full"`), a summary the provider wrote of it (`"summary"`), or reasoning the
+provider withheld (`"redacted"`, with empty text). Its `reasoning_state` is what the provider asks
+to be sent back on the next request of the conversation. Keep the block as it is in the context of
+later requests: an adapter sends a provider back only the state that provider issued for that
+model, and leaves out reasoning it can't use, listing it in `adaptation_losses`.
+
+`ModelRequest` also has two optional fields: `response_format`, which asks for
+[structured output](../guides/dialects-and-adaptation.mdx#structured-output), and
+`adaptation_policy`, which says whether the adapter may
+[change the request's meaning](../guides/dialects-and-adaptation.mdx#refusing-changes-in-meaning)
+to send it. A response's and a failure's `adaptation_losses` list what the adapter changed (see
+[What an adapter changes](../guides/dialects-and-adaptation.mdx#what-an-adapter-changes)).
+
+A response's text is a finished answer only when it stopped with `StopEndTurn` or
+`StopStopSequence`; a refusal can be empty. Call `response.raise_for_stop_reason()` before
+reading it, as
+[When a response is not an answer](../guides/dialects-and-adaptation.mdx#when-a-response-is-not-an-answer)
+explains.
+
 ## Sampling settings
 
-`SamplingParams` has `max_tokens`, `temperature`, `top_p`, `stop_sequences`, `reasoning`, and a
-provider-specific `extra`. A setting left `None` leaves the choice to the adapter or the
-provider, and which settings take effect depends on the adapter and the model:
-`OpenAIResponsesAPI`, for example, doesn't apply `stop_sequences`. Leave a setting unset unless
-your adapter and model support it, and don't expect `extra` settings to carry over from one
-adapter to another. Write numeric fields with their declared types, such as `temperature=0.0`
+`SamplingParams` has `max_tokens`, `temperature`, `top_p`, `stop_sequences`, `reasoning`,
+`speed`, and a provider-specific `extra`. A setting left `None` leaves the choice to the adapter
+or the provider, and which settings take effect depends on the adapter and the model:
+`OpenAIResponsesAPI`, for example, doesn't apply `stop_sequences`, and says so in the result's
+`adaptation_losses`
+([What an adapter changes](../guides/dialects-and-adaptation.mdx#what-an-adapter-changes)).
+Leave a setting unset unless your adapter and model support it, and don't expect `extra` settings to carry over from
+one adapter to another. Write numeric fields with their declared types, such as `temperature=0.0`
 rather than `0`, since stored records are checked strictly.
 
-`ReasoningParams` has `enabled`, `budget_tokens`, and `effort`, one of `"minimal"`, `"low"`,
-`"medium"`, `"high"`, `"xhigh"`, and `"max"`. Each adapter turns them into its provider's
-parameters:
+`speed` is `"fast"` or `"standard"`, the provider's speed tier: Anthropic's fast mode, or OpenAI's
+and OpenRouter's fast service tier. It is sent as asked, so a model without the tier rejects the
+request or serves the standard tier, and `Usage.speed` says which it served. Gemini has no speed
+tier, and leaves it out.
+
+`ReasoningParams` has `enabled`, `budget_tokens`, `effort`, one of `"minimal"`, `"low"`,
+`"medium"`, `"high"`, `"xhigh"`, and `"max"`, and `summary`, whether readable reasoning comes
+back: `True` asks for it (Anthropic's summarized thinking, an OpenAI Responses `"detailed"`
+summary, Gemini's thoughts), `False` asks for none, and `None` leaves the provider's default.
+Each adapter turns them into its provider's parameters:
 
 * The OpenAI adapters send an `effort` you set as it is, `"xhigh"` and `"max"` included, as
   `reasoning.effort` (Responses) or `reasoning_effort` (Chat Completions). They don't lower it to
@@ -204,10 +259,22 @@ parameters:
   thinking with that budget, and enabled thinking with no budget into adaptive thinking, which
   only newer models offer: give older ones a budget. An `effort` is sent as
   `output_config.effort`, except `"minimal"`, which Anthropic doesn't offer, sent as `"low"`.
+* `GeminiGenerateContentAPI` sends a `budget_tokens` as `thinkingBudget`, `enabled=False` as a
+  budget of 0, and an `effort` as `thinkingLevel`, with `"xhigh"` and `"max"` sent as `"high"`.
+  Which of these a model takes is the model's: some models can't turn thinking off, and a
+  budget and a level together are rejected. A model that rejects a budget of 0 is sent the
+  `"minimal"` level instead, which doesn't guarantee no thinking.
 
-`SamplingOverrides(inner=api, reasoning=...)` wraps an adapter and pins the reasoning settings of
-every request; despite its name, it overrides reasoning only.
+`SamplingOverrides(inner=api, reasoning=..., speed=...)` wraps an adapter and pins the reasoning
+settings, the speed tier, or both on every request; a field left `None` leaves requests as they
+are. It overrides no other sampling field.
 
 Provider prompt-cache hints (`CacheableContentText`, `CacheableToolParam`, `CacheControl`) ask the
-provider to cache a prompt's prefix. They are unrelated to fxtr's
-[step cache](../../../fxtr/references/concepts/managing-the-step-cache.mdx), which keeps completed step results.
+provider to cache a prompt's prefix. `FinalBlockCacheControl(inner=api)`, from
+`behaviors.implementations.models.overrides`, wraps any adapter and adds a breakpoint to a
+request's final block when that block is non-empty text or a tool result you didn't already mark,
+so each turn of a conversation can read the prefix the previous turn wrote. Whether a breakpoint
+reaches the provider depends on the dialect: Gemini has none, and the Chat Completions adapters send
+them only with `forward_cache_control=True`. An adapter that drops or changes a breakpoint records
+a `cache_breakpoint` loss. Prompt-cache hints are unrelated
+to fxtr's [step cache](../../../fxtr/references/concepts/managing-the-step-cache.mdx), which keeps completed step results.

@@ -30,9 +30,15 @@ completed rollout can still contain a reply cut off at the token limit.
 
 A model call's expected failures are returned as data: `ModelAPI.generate` returns a
 `ModelCallFailure` with a `category` (`context_length`, `content_filter`, `rate_limited`,
-`overloaded`, `authentication`, `invalid_request`, or `server_error`), a `description`, and the
-provider's HTTP status. An error in the implementation itself raises. The provider adapters turn
-off their SDKs' own retries, so that these settings decide every attempt:
+`overloaded`, `authentication`, `invalid_request`, `server_error`, or `adaptation_refused`), a
+`description`, and the provider's HTTP status. `adaptation_refused` is a request that could not
+be sent without a change in meaning its `adaptation_policy` refuses (see
+[Refusing changes in meaning](dialects-and-adaptation.mdx#refusing-changes-in-meaning)).
+An error in the implementation itself raises. The provider adapters have no retry schedule of
+their own, so these settings decide when a failed call is tried again. (Some adapters resend a
+request a model rejected in a form they know how to fix, within the same call and at most once
+for each fix; that is not a retry under these settings, and happens without one. See
+[What an adapter changes](dialects-and-adaptation.mdx#what-an-adapter-changes).)
 
 * A session of `chat_session_model_from_api` has **no retry schedule by default** (`retry=None`).
   Pass `retry=RetryConfig()` to retry failures in `failure_categories_to_retry`, by default
@@ -68,10 +74,36 @@ happen:
 * `ContextTurnEvent` and `ModelTurnEvent`, each carrying a completed turn, the same object that
   lands on the returned rollout;
 * `ModelStreamEvent`, carrying a delta of the model's output while it generates a turn, when the
-  model's session streams (sessions of a streaming adapter, such as the provider adapters, do).
+  model's session streams (sessions of a streaming adapter, such as the provider adapters, do);
+* `RolloutEndEvent`, last, carrying how the rollout ended: the `status` and `end` the returned
+  rollout has. A rollout that raises reports none.
 
 The callback is awaited in order, on the rollout's own path: a slow callback slows the rollout,
 and one that raises aborts it. Deltas can describe output that a retry then discards:
 `StreamRestart` tells a consumer to reset what it has assembled of the turn so far. The completed
-turns and the returned rollout are the durable content, and how the rollout ended is its returned
-status, not an event.
+turns and the returned rollout are the durable content.
+
+To watch a rollout in the viewer while its step runs, pass a `ChatRolloutPreview` publishing to
+the step's `context.preview`:
+
+```python
+from behaviors.rollouts.chat_preview import ChatRolloutPreview
+
+rollout = await run_chat_rollout(
+    model, policy, event_callback=ChatRolloutPreview(context.preview)
+)
+```
+
+It folds the events into a partial `ChatRollout` (see
+[Partial values](../../../fxtr/references/concepts/entities-and-custom-types.mdx#partial-values)): the finished turns, and
+while the model streams, a partial last model turn holding its output so far. `status` and `end`
+are `None` until the rollout ends, then what the returned rollout has. A project registering the
+behaviors renderers (`behaviorsRenderers` from
+`fxtr-view-behaviors`) sees it in the same conversation view as the finished rollout, marked in
+progress, with the reply being streamed at the bottom, and the step's row in its run's table says
+the turn the rollout is on ("turn 6 · streaming…"). To keep another callback too, call the preview
+from your own: `await preview(event)`.
+
+The same renderers show a partial `Transcript`, `TranscriptGroup`, or `AgentRun` that a step
+publishes itself, with `context.preview(Partial(Transcript, ...))`: the messages or transcripts so
+far, each one still being written (itself a partial value) marked as streaming.

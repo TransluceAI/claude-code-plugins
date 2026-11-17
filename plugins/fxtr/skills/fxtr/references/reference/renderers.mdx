@@ -31,12 +31,14 @@ const bundle: ViewBundle = {
 export default bundle;
 ```
 
-| Slot                 | Subject                                | Props                      | What it draws                                                                                                                                 |
-| -------------------- | -------------------------------------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `EntityPanel`        | an entity type tag                     | `{ id, storage }`          | The entity, opened in a pane.                                                                                                                 |
-| `EntityInlineLink`   | an entity type tag                     | `{ id }`                   | The entity where it is referenced, inside the viewer's link. It must be static text: no `EntityLink`, buttons, or other interactive elements. |
-| `EntityHoverPreview` | an entity type tag                     | `{ id }`                   | A compact preview, shown when a link to the entity is hovered.                                                                                |
-| `InvocationPanel`    | a step's or workflow's registered name | `{ invocations, storage }` | The invocations the viewer's selection picks out; for the root workflow, a view of the whole run.                                             |
+| Slot                  | Subject                                | Props                               | What it draws                                                                                                                                 |
+| --------------------- | -------------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `EntityPanel`         | an entity type tag                     | `{ id, storage }`                   | The entity, opened in a pane.                                                                                                                 |
+| `EntityInlineLink`    | an entity type tag                     | `{ id }`                            | The entity where it is referenced, inside the viewer's link. It must be static text: no `EntityLink`, buttons, or other interactive elements. |
+| `EntityHoverPreview`  | an entity type tag                     | `{ id }`                            | A compact preview, shown when a link to the entity is hovered.                                                                                |
+| `PartialEntityPanel`  | an entity type tag                     | `{ value, partial, live, storage }` | A value a running step is producing, its latest `context.preview`, in place of the step's output. See [Live previews](#live-previews).        |
+| `PartialEntityInline` | an entity type tag                     | `{ value, partial, live }`          | The same value in one line, in the running step's table row: how far it has got. See [Live previews](#live-previews).                         |
+| `InvocationPanel`     | a step's or workflow's registered name | `{ invocations, storage }`          | The invocations the viewer's selection picks out; for the root workflow, a view of the whole run.                                             |
 
 The prop types are `EntityPanelProps`, `EntityViewProps` (the `id` alone), and
 `InvocationPanelProps`. Give each renderer an ID prefixed with your project's name. Two renderers
@@ -172,6 +174,47 @@ export function JudgePanel({ invocations }: InvocationPanelProps) {
 Register it with `renderer(InvocationPanel, "my_experiment.judge", "my-project.JudgePanel",
 JudgePanel)`. `eachInvocation` suits a view of one invocation's record repeated per invocation; a
 panel that shows many spawns together, like this one, reads them directly.
+
+## Live previews
+
+While a step runs, the viewer shows its latest
+[preview](../concepts/workflows-and-steps.mdx#the-context-argument) in place of its output, and
+after it fails, the last one under the error. A preview is not a stored entity, so its renderer is
+handed the value itself, `value`, instead of an ID; the viewer dispatches on the value's type tag as
+for an entity. A type with no `PartialEntityPanel` renderer of its own shows the same data tree as a
+finished entity's raw view, with the fields not yet known as `null`.
+
+Registering a `PartialEntityPanel` renderer for a type is how a renderer opts in to showing its
+values as they stream. `partial` is true while the value is still being produced: then any field may
+be `null` whatever its type says, a list may be shorter than it will be, and nested
+[partial values](../concepts/entities-and-custom-types.mdx#partial-values) are already unwrapped into
+the records they will become. A renderer reading a field unconditionally must treat `null` as "not
+yet". `isPartial(part)` from `fxtr-view` says which parts are still being produced, for one that
+shows a part in progress differently (the reply being written, not one just finished); read it on
+the value as handed over, since a copy of a part is not marked. `live` says whether the step is still
+running: it is false for the last preview of a step that failed or stopped, whose partial value
+will never be finished, so the renderer should not show it as in progress. Share the component with
+the type's `EntityPanel` renderer, so a value looks the same streaming as finished:
+
+```tsx views/src/report.tsx
+import { PartialEntityPanel, renderer, type PartialEntityPanelProps } from "fxtr-view";
+import { ReportView, type ReportData } from "./report_view";
+
+export function ReportPreview({ value, partial, live }: PartialEntityPanelProps) {
+  return <ReportView data={value as ReportData} inProgress={partial && live} />;
+}
+
+export const reportPreview = renderer(PartialEntityPanel, "org.example.Report.v1", "my-project.Report", ReportPreview);
+```
+
+The value changes as new previews arrive without remounting the component, so its state survives.
+A renderer that throws on a preview falls back to the data tree, with its error above it.
+
+A running step's row in a run's table shows the preview in one line, where a finished row shows its
+result's `EntityInlineLink`. A `PartialEntityInline` renderer, given the same props without
+`storage`, says how far the value has got (behaviors' rollout reads "turn 6 · streaming…"); like an
+inline link, it must be static phrasing content. A type with none shows its type name and
+"partial".
 
 ## Links
 
