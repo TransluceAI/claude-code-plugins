@@ -2,10 +2,10 @@
   "skill": "fxtr",
   "documentation": "https://docs.transluce.ai/fxtr",
   "packages": {
-    "fxtr": "0.2.0a0",
-    "behaviors": "0.0.1a5"
+    "fxtr": "0.2.0a1",
+    "behaviors": "0.0.1a6"
   },
-  "revision": "6432f6ad1682ca0a8ff344a6ef66cb09bbccb8f7",
+  "revision": "15e931fd57b9731c677daebd977e474baaf11868",
   "modified": false,
-  "content_sha256": "3188553424bccd6a1a5b64c814bec89797e7468678f4d4e0fed6540d89636780"
+  "content_sha256": "d4abbc2df2317b0199f41169698ed57c65206989c424230be0347c86351200e2"
 }
