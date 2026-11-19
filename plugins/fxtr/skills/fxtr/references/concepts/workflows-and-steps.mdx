@@ -51,13 +51,15 @@ values indexed by named dimensions, which
 depth. Inside the workflow you mostly do not touch the arrays' data. You work with
 **handles** to them, and you pass those handles between the operations you schedule.
 
-Here is a workflow that scores a set of prompts with a model, then asks a child workflow to
-summarize the scores:
+Here is a workflow that has each model answer a set of prompts, has a judge score each answer, then
+asks a child workflow to summarize each model's scores:
 
 ```python
 from typing import Annotated
 
-from fxtr.experiment.handles import ArrayHandle
+from behaviors.types import TextEntity
+from fxtr.core.entities import BoundID
+from fxtr.experiment.handles import ArrayHandle, ScalarHandle
 from fxtr.experiment.workflows import WorkflowContext, workflow
 
 
@@ -65,21 +67,40 @@ from fxtr.experiment.workflows import WorkflowContext, workflow
 async def evaluate(
     context: WorkflowContext,
     prompts: Annotated[ArrayHandle[str], "[prompt: str]"],
-    models: Annotated[ArrayHandle[BoundID[ModelConfig]], "[model: str]"],
+    model_name: Annotated[ArrayHandle[str], "[model: str]"],
+    sampling: ScalarHandle[BoundID[SamplingParamsEntity]],
+    judge_model_name: ScalarHandle[str],
+    rubric: ScalarHandle[BoundID[TextEntity]],
 ) -> Annotated[ArrayHandle[float], "[model: str]"]:
-    """Answer every prompt with every model and summarize each model's scores."""
+    """Answer every prompt with every model, judge each answer, and summarize each model."""
     answers = context.run_step(
-        "answer", answer, {"config": models, "question": prompts}, map_over=["model", "prompt"]
+        "answer",
+        answer,
+        {"model_name": model_name, "sampling": sampling, "question": prompts},
+        map_over=["model", "prompt"],
     )
-    scores = context.run_step("score", score, {"answer": answers}, map_over=["model", "prompt"])
-    return context.run_child_workflow("summarize", summarize, {"scores": scores}, map_over=["model"])
+    judgments = context.run_step(
+        "score",
+        score,
+        {
+            "rollout": answers,
+            "model_name": judge_model_name,
+            "sampling": sampling,
+            "rubric": rubric,
+        },
+        map_over=["model", "prompt"],
+    )
+    return context.run_child_workflow(
+        "summarize", summarize, {"judgments": judgments}, map_over=["model"]
+    )
 ```
 
 Three things are happening:
 
 * `context.run_step(name, step, inputs, ...)` schedules a step and immediately returns a handle to
   its future result. It does not wait. The `map_over` argument says which dimensions to run the
-  step once per key of, so `answer` is called once for every model and prompt pair.
+  step once per key of, so `answer` is called once for every model and prompt pair. `sampling`
+  has no dimensions, so every call gets the same one. So do the judge's model name and rubric.
 * Passing the `answers` handle to the `score` step is what makes `score` depend on `answer`. fxtr
   draws an edge between them in the viewer, and will not start `score` until the answers exist.
 * `context.run_child_workflow(...)` works the same way for a workflow. Any workflow can be the root
@@ -137,44 +158,44 @@ Here is a step that asks a language model one question, using the
 
 ```python
 import anyio
-from behaviors.implementations.models import (
-    DEFAULT_FAILURE_CATEGORIES_TO_RETRY,
-    generate_with_retries,
+from behaviors.implementations.context_policies import (
+    ScriptedUserSimulator,
+    context_policy_from_user_simulator,
 )
+from behaviors.implementations.models import chat_session_model_from_api
 from behaviors.implementations.models.openai_responses import OpenAIResponsesAPI
-from behaviors.types import ContentText, ModelCallFailure, ModelRequest, RetryConfig, UserMessage
+from behaviors.rollouts.chat import run_chat_rollout
+from behaviors.types import ChatRollout, ContentText, RetryConfig, RolloutFailed, UserMessage
 
 from fxtr.experiment.steps import StepContext, step
 
 
 @step(name="qa.answer")
-async def answer(context: StepContext, config: ModelConfig, question: str) -> Answer:
-    """Ask the model one question and keep its reply."""
-    request = ModelRequest(
-        context=(UserMessage(content=(ContentText(text=question),)),),
-        tools=(),
-        tool_choice=None,
-        parallel_tool_calls=None,
-        sampling=config.sampling,
-    )
-    api = OpenAIResponsesAPI(config.model_name)
+async def answer(
+    context: StepContext, model_name: str, sampling: SamplingParamsEntity, question: str
+) -> ChatRollout:
+    """Ask the model one question, and keep the conversation."""
+    api = OpenAIResponsesAPI(model_name)
     try:
-        response = await generate_with_retries(
-            api, request, retry=RetryConfig(),
-            failure_categories_to_retry=DEFAULT_FAILURE_CATEGORIES_TO_RETRY,
-        )
+        model = chat_session_model_from_api(api, sampling.params, retry=RetryConfig())
+        user = ScriptedUserSimulator(messages=(UserMessage(content=(ContentText(text=question),)),))
+        policy = context_policy_from_user_simulator(user, initialization=None)
+        # One more turn than there are scripted messages, so the rollout can end as completed.
+        rollout = await run_chat_rollout(model, policy, max_turns=2)
     finally:
         with anyio.CancelScope(shield=True):
             await api.aclose()
-    if isinstance(response, ModelCallFailure):
-        raise RuntimeError(f"model call failed ({response.category}): {response.description}")
-    return Answer(question=question, text=answer_text(response.output))
+    if isinstance(rollout.status, RolloutFailed):
+        failure = rollout.status.failure
+        raise RuntimeError(f"model call failed ({failure.category}): {failure.description}")
+    return rollout
 ```
 
-`ModelConfig` and `Answer` are entity types the project defines (see
-[Entities and custom types](entities-and-custom-types.mdx)), and `answer_text` is a
-small helper that joins the text blocks of the reply. The details of building requests, holding
-multi-turn conversations, and judging outputs are in
+`ChatRollout` is behaviors' record of a whole conversation, and an entity, so fxtr stores it.
+`SamplingParamsEntity` is an entity type the project defines (see
+[Entities and custom types](entities-and-custom-types.mdx)). The `score` step judges
+each conversation against the rubric with behaviors' `judge`, and returns its `Judgment`. The
+details of holding conversations and judging them are in
 [Calling language models](../../../behaviors/references/guides/language-models.mdx).
 
 ### How steps run and get cached
@@ -242,15 +263,18 @@ always wrap one in `Annotated[..., "[...]"]`, including `"[]"` for a scalar.
 For an input that is a reference to an [entity](entities-and-custom-types.mdx), a
 stored record with an ID of its own, the annotation also decides what the body receives:
 
-* `config: ModelConfig` loads the entity before the body runs. This is the common case.
-* `config: BoundID[ModelConfig]` passes a typed reference without loading it, which is what you
-  want when the step's result should point back at the input.
-* `config: EntityID` passes the bare ID.
-* `Annotated[Array[BoundID[Document]], "[doc: str]"]` passes a whole array of references.
+* `judgment: Judgment` loads the entity before the body runs. This is the common case, as in a
+  step that reads a judge's score from `judgment.output`.
+* `judgment: BoundID[Judgment]` passes a typed reference without loading it, which is what you
+  want when the step's result should point back at the input, such as a summary row that links to
+  the judgment it summarizes.
+* `judgment: EntityID` passes the bare ID.
+* `Annotated[Array[BoundID[Judgment]], "[prompt: str]"]` passes a whole array of references: the
+  input of `summarize` above, one model's judgments over every prompt.
 
-A step declared to return an entity type, like `-> Answer` above, can return the entity itself.
-fxtr stores it and records its reference as the step's result. A step declared to return a struct
-returns its `TypedDict`, and a step whose result has dimensions returns an `Array`.
+A step declared to return an entity type, like `-> ChatRollout` above, can return the entity
+itself. fxtr stores it and records its reference as the step's result. A step declared to return a
+struct returns its `TypedDict`, and a step whose result has dimensions returns an `Array`.
 
 A workflow's parameters are usually handles. Annotating one with another type makes the runner
 wait for that input and pass its data instead: `Array[...]` passes the array, a single-value type
@@ -280,7 +304,21 @@ other. A `StepContext` and a `WorkflowContext` both let you:
 A `WorkflowContext` additionally has the scheduling operations: `run_step`,
 `run_child_workflow`, `add_source_array` for introducing fixed data into the graph, and `combine`
 and `stack` for putting handles side by side. A `StepContext` exposes the step's `cache_address`, the
-address its result is stored at.
+address its result is stored at, and `preview`:
+
+* **Preview.** `context.preview(value)` publishes a value showing the result the step is producing,
+  which the viewer shows in the step's panel while it runs. Pass a
+  [partial value](entities-and-custom-types.mdx#partial-values) of what the step will
+  return, or any tagged dataclass. Each call replaces the last, only the latest is kept, and it
+  is saved at most a few times a second, so calling it on every streamed token is fine. A step
+  that fails or is stopped keeps its last preview; when a step completes, its result takes the
+  preview's place and the preview is deleted. When a preview costs more to build than an event
+  costs to handle, such as a long conversation assembled again on every token, pass a function of
+  no arguments returning it instead, `context.preview(lambda: draft.value)`: fxtr calls it only
+  when it saves the preview, and once more if the step fails or is stopped. A preview is not the
+  step's result: nothing reads it but the viewer, which shows it with the value's renderer when
+  the project registers one for previews, else as the same data tree as a finished entity (see
+  [Live previews](../reference/renderers.mdx#live-previews)).
 
 ### Registered names
 

@@ -12,9 +12,9 @@ are stored and shown, and how they differ from a session's checkpoint.
 Messages are `SystemMessage`, `UserMessage`, `AssistantMessage`, and `ToolMessage`, each holding a
 tuple of typed content blocks. An assistant's content may include text, tool calls, reasoning,
 redacted reasoning, or summarized reasoning, so don't assume every block has `.text`. For the
-answer's text alone, keep the `ContentText` blocks of the turn's `AssistantMessage`s, as the
-[judge step's](language-models.mdx#a-judge-step) `answer_text` does, and keep the
-structured rollout for later inspection.
+answer's text alone, keep the `ContentText` blocks of the turn's `AssistantMessage`s, and keep the
+structured rollout for later inspection. To give a whole conversation to a judge, flatten it into
+a `Transcript`, as the [judge step](language-models.mdx#a-judge-step) does.
 
 ## Metadata
 
@@ -72,7 +72,7 @@ initializations, such as `SetSystemMessage`, are fxtr entities, with type IDs of
 `org.transluce.behaviors.<Class>.v<N>`, such as `org.transluce.behaviors.ChatRollout.v2`. A
 version is bumped when a type's stored shape changes, and a record stored under an earlier version
 doesn't load as the current type. Versions are per type: `ChatRollout` and its turns use `.v2`,
-while messages and `ModelResponse` use `.v1`. Only the current version of each type is supported.
+messages use `.v1`, and `ModelResponse` uses `.v2`. Only the current version of each type is supported.
 
 A step that returns a `ChatRollout` has it stored like any other entity
 (see [Entities and custom types](../../../fxtr/references/concepts/entities-and-custom-types.mdx)), and

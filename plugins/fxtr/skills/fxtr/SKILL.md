@@ -61,6 +61,7 @@ Running and viewing jobs before the first launch.
 | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
 | Launch a job, watch it in the viewer, return a report and read results, resume, inspect, or share jobs | [Running and viewing jobs](references/guides/running-and-viewing-jobs.mdx)                                            |
 | Choose how many steps run at once, or speed up a job whose steps call APIs                             | [Choose how many steps run at once](references/guides/running-and-viewing-jobs.mdx#choose-how-many-steps-run-at-once) |
+| Set up a remote, push a job to a fxtr hub or an OCI registry, or pull one                              | [Pushing and pulling jobs](references/guides/pushing-and-pulling-jobs.mdx)                                            |
 | Reuse or recompute cached results, resolve cache conflicts, change a step's logic                      | [Managing the step cache](references/concepts/managing-the-step-cache.mdx)                                            |
 | Look up a command's options                                                                            | [CLI reference](references/reference/cli.mdx)                                                                         |
 
@@ -131,6 +132,31 @@ before [adding one](references/reference/renderers.mdx#adding-a-package-to-a-pro
 * **Keep the viewer running** across launches and renderer edits. It rebuilds the renderers when
   their sources change, and the open viewer switches to them in place, so never ask the user to
   reload or restart it.
+* **Link the user to what you are pointing at.** The viewer's URL holds the job, the level shown,
+  the slice, and the open panels, so instead of describing where to click, give the user a link:
+  the viewer's URL (the one `fxtr view` printed, also saved in `.fxtr/viewer.json` within the project), then `#` and `&`-separated parts.
+
+  ```
+  http://127.0.0.1:8000/#job=<job id>&w=flowchart(/outer,model=sonnet)&slice=(prompt=3)&card=judge&p=table(/outer/judge,model=sonnet)&p=.output.transcript
+  ```
+
+  `job` is the job's ID (left out, the newest job). `w` is the workflow invocation shown (left
+  out, the root's trace): `trace`, `flowchart`, or the id of an `InvocationPanel` renderer
+  of that workflow, applied to its step path from the root, with the keys of the mapped workflows
+  on the way. `slice` picks dim values for every card and panel. `card` names a step of that workflow (or
+  `return`, what it returned) whose card to scroll to. Each `p` opens a panel, in order,
+  each following the one before it; `pin` opens one that stays as it is. A panel is an address,
+  a view applied to a location and params: the view is `table`, `invocation`, `tree`, `code`, a
+  renderer's or page's id, or nothing for the default; the location is a step path from the root
+  (`/outer/judge`), or `cid:<cid>` for an entity, then a field path (`.output.transcript`,
+  `.inputs.prompt`, `[2]` for a list item); params bind dims and the params a view declares, by
+  name, as bare values (`3`, `sonnet`) or JSON (`"two words"`, `{"message":2}`). The `invocation`
+  view shows one call: its status line, then its inputs, a workflow's runs, and its output; with
+  `section_order=output_first` the output comes right under the status line instead
+  (`section_order=inputs_first` is the default). Link output first when the user wants to read
+  what the call returned. After the first
+  panel, a location may be relative to the panel before it: `.field…` below it, `../step` a
+  sibling. Percent-encode only spaces, `%`, `&`, `#`, `+`, and quotes.
 
 ### Reading the documentation
 

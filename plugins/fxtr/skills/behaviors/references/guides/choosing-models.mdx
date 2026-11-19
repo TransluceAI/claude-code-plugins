@@ -50,6 +50,27 @@ This is one page, even with `limit=1000`. While `has_more` is true, request the 
 `after_id` set to the returned `last_id`, and collect its models before advancing again.
 Pass a returned `id` to `AnthropicMessagesAPI(model_id)`; `display_name` is only for presentation.
 
+## Gemini
+
+[List models](https://ai.google.dev/api/models#method:-models.list)
+with `GET https://generativelanguage.googleapis.com/v1beta/models`:
+
+```bash
+curl --fail-with-body --silent --show-error \
+  'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000' \
+  -H "x-goog-api-key: $GEMINI_API_KEY" \
+  -o /tmp/gemini-models.json &&
+jq -r '.models[]
+  | select(.supportedGenerationMethods | index("generateContent"))
+  | [(.name | sub("^models/"; "")), .displayName] | @tsv' /tmp/gemini-models.json &&
+jq '{nextPageToken}' /tmp/gemini-models.json
+```
+
+While `nextPageToken` is set, request the next page with `pageToken` set to it. The filter keeps
+models that serve `generateContent`, the method the adapter calls. Pass the returned `name`
+without its `models/` prefix to `GeminiGenerateContentAPI(model_id)`, from
+`behaviors.implementations.models.gemini`.
+
 ## OpenRouter
 
 OpenRouter serves models from multiple vendors through an OpenAI-compatible endpoint. Its
@@ -71,31 +92,29 @@ For the general catalog, change `/models/user` to `/models`. The
 Use the full returned `id`, including its vendor prefix and any suffix, with:
 
 ```python
-import os
+from behaviors.implementations.models.openrouter import OpenRouterAPI
 
-from behaviors.implementations.models.openai_compatible import OpenAICompatibleAPI
-
-api = OpenAICompatibleAPI(
-    model_id,  # Exact id selected from the OpenRouter listing.
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.environ["OPENROUTER_API_KEY"],
-)
+api = OpenRouterAPI(model_id)  # Exact id selected from the OpenRouter listing.
 ```
 
-The OpenAI SDK does not read `OPENROUTER_API_KEY` by itself, so pass it explicitly as above.
+`OpenRouterAPI` reads `OPENROUTER_API_KEY` unless you pass `api_key`, and sends back the
+reasoning state OpenRouter returns, which `OpenAICompatibleAPI` pointed at OpenRouter would not.
 Close the adapter with `await api.aclose()` when finished, as in the
 [conversation step](language-models.mdx#a-conversation-as-a-step).
 
 ## Search and validate a candidate
 
-Search a saved response by ID or display name, changing the file and search text as needed:
+Search a saved response by ID or display name, changing the file and search text as needed. The
+filter reads any of the listings above: Gemini's lists `models` rather than `data`, and its `name`
+is the ID with a `models/` prefix, which the filter removes.
 
 ```bash
 jq -r --arg query 'claude' '
-  .data[]
-  | select(([.id, (.name // .display_name // "")] | join(" ") | ascii_downcase)
+  (.data // .models)[]
+  | (.id // (.name | sub("^models/"; ""))) as $id
+  | select(([$id, (.display_name // .displayName // .name // "")] | join(" ") | ascii_downcase)
       | contains($query | ascii_downcase))
-  | .id
+  | $id
 ' /tmp/openrouter-models.json
 ```
 
@@ -105,6 +124,6 @@ streaming, tools, and reasoning, then try the chosen adapter and sampling settin
 request before launching a sweep. Without credentials, the providers' published catalogs and
 documentation give candidate IDs, but not whether your account can use them.
 
-Keep the chosen provider, model ID, and request settings in the experiment's configuration
-inputs, so that each run records what was selected (see
+Pass the chosen provider and model ID, and each request setting, to the step as inputs, so that
+each run records what was selected (see
 [A conversation as a step](language-models.mdx#a-conversation-as-a-step)).

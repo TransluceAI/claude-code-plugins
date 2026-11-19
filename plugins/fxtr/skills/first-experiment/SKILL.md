@@ -123,18 +123,28 @@ that fits: one question, answered with model calls.
 4. **What are we measuring?** To make a quantitative comparison between the variables we are studying,
    we need some way to measure differences in behavior. In some cases, this can just be a pure function
    (e.g. response length or accuracy), but usually this will involve running a judge or grader model with
-   a rubric that returns a verdict. Judge models should be asked for a rationale or explanation before
-   giving a final answer, which should be either a numeric score or a set of named categories. XML
-   format for structured outputs is a good default. Note that for some exploratory tasks (like seeing
+   a rubric that returns a verdict. Judge with behaviors' `judge`, and give it an output schema from
+   `behaviors.judging.schemas`: `continuous_schema` for a numeric score, `categorical_schema` for
+   named categories, or `binary_schema` for yes or no. Every schema starts with a `discussion`, so
+   the judge explains its reasoning before it gives its answer. Note that for some exploratory tasks (like seeing
    how models respond to an open-ended prompt), it might make sense to
    first generate some initial data and then look at it manually before proposing what the actual
    rubric or set of outcomes should be!
-5. **What data types will we use to represent the experiment?** It usually makes sense to define some
-   new entity types to hold the results of various parts of your experiment. For some parts of the experiment, you might be able to use the types from the `behaviors` library; in this case you should
-   just use these. However, other things such as experiment configuration, judge results, and the final
-   report object should usually be experiment-specific types. By default you should use
-   "local.{projectname}.{TypeName}" for experiment-specific types (since there is not yet a global
-   registry of types).
+5. **What inputs and data types will the experiment use?** Give each setting of a model call its
+   own workflow input, so every result points at the exact settings that produced it, and the cache
+   sees a changed setting:
+
+   * a model is a name with its provider, such as `anthropic/claude-opus-5-5`, which the project's
+     `make_api` turns into a model API;
+   * a prompt template is a string, and a rubric, the judge's instructions and the judge's output
+     schema are `TextEntity` entities;
+   * sampling settings go in a small entity of the project's own, `SamplingParamsEntity`, because an
+     array can't hold a `SamplingParams` itself.
+
+   Use behaviors' types for what they cover: `ChatRollout` for a conversation, `Transcript` for what
+   a judge reads, and `Judgment` for a judge's answer. Define experiment-specific types for the
+   sampling entity, a per-condition summary, and the final report. By default, name them
+   "local.{projectname}.{TypeName}" (there is not yet a global registry of types).
 
 Show the design in one short block before writing code, along with
 what each part becomes in fxtr. For example:
@@ -150,15 +160,22 @@ Summary:      per model, the mean score
 Size:         pilot 2 x 3 x 1  =  6 conversations (6 model calls) +  6 judge calls
               full  2 x 10 x 3 = 60 conversations (60 model calls) + 60 judge calls
 
-New entity types to define:
-- GenerationConfig: provider, model_name, sampling, prompt_template
-- JudgeConfig: provider, model_name, sampling, rubric
-- JokeGrade: topic, joke, score, rationale, judge_reply
-- JokeReport: references to the jokes, grades, and summary arrays
+Inputs:
+- model_name, over [model]: anthropic/claude-haiku-4-5-20251001, anthropic/claude-sonnet-5-5
+- sampling: one SamplingParamsEntity (max_tokens 1000), shared by the jokes and the judge
+- prompt_template, topics, samples
+- judge_model_name (anthropic/claude-opus-5-5), judge_sampling, judge_instructions, rubric,
+  output_schema (a continuous_schema from 1 to 10)
+
+Types to define:
+- SamplingParamsEntity: params
+- ModelSummary: jokes, graded, mean_score
+- JokeReport: references to the jokes, judgments, and summary arrays
 
 Structure of the experiment workflow:
 - a joke step mapped over [model, topic] replicated over [sample], returning a ChatRollout
-- a judge step mapped over [model, topic, sample]
+- a transcript step mapped over [model, topic, sample], returning a Transcript
+- a judge step mapped over [model, topic, sample], calling `judge` and returning a Judgment
 - a summary step mapped over [model]
 ```
 
@@ -198,13 +215,13 @@ and [Calling language models](../behaviors/references/guides/language-models.mdx
 
 Then tell the user what you are about to do, and then write the following:
 
-* **One module** for the experiment, registered in `[tool.fxtr] modules`, holding its
-  configuration entities, its verdict and report entities, its steps, and its workflow, shaped as
-  the behaviors skill's best practices say. Pass each step only the fields it uses: a
+* **One module** for the experiment, registered in `[tool.fxtr] modules`, holding its sampling
+  entity, its summary and report types, its `make_api`, its steps, and its workflow, shaped as the
+  behaviors skill's best practices say. Pass each step only the fields it uses: a
   conversation step that receives the question's text but not its reference answer doesn't rerun
   when a reference answer is corrected, and only the judge does.
-* **A launcher** at the project root that builds the items, stores a configuration per condition,
-  runs the workflow, and prints the summary from the report in an `on_result` callback
+* **A launcher** at the project root that builds the items, stores the sampling settings and the
+  judge's instructions, rubric and output schema, runs the workflow, and prints the summary from the report in an `on_result` callback
   ([Read results](../fxtr/references/guides/running-and-viewing-jobs.mdx#read-results)), so its
   output ends with the answer rather than the report's ID. Define the pilot and full sizes side
   by side and choose one with an argument (`uv run python launch.py pilot`), so the full run is
@@ -286,7 +303,7 @@ changes on a first experiment:
 * **Adding a new step at the end** (e.g. for a new analysis): all previous steps will hit the cache,
   so you can just insert the new step into the workflow in place.
 * **Changing a step's code** (how answers are parsed or scored): the cache won't notice. Clear
-  that step's entries, or add a configuration field, as
+  that step's entries, or add an input that changes with the logic, as
   [Handling changes to step logic](../fxtr/references/concepts/managing-the-step-cache.mdx#handling-changes-to-step-logic)
   says, and tell the user which results that recomputes.
 

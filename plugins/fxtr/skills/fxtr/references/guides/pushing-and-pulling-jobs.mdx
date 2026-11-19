@@ -1,0 +1,318 @@
+---
+title: "Pushing and pulling jobs"
+description: "Share jobs through a fxtr hub or an OCI registry, with fxtr push and pull."
+---
+
+A **remote** is a place to push jobs to and pull them from. A push sends one job's record, the
+same record that `fxtr jobs export` writes, to the remote. A pull gets it back and imports it, so
+a pull refuses what an import refuses. There are two kinds of remote. A `hub` remote publishes
+jobs to a fxtr hub, which keeps a team's jobs, lists them, and shows each in the experiment
+viewer in the browser ([A hub remote](#a-hub-remote)). An `oci` remote keeps jobs in an OCI
+registry, the kind that holds container images; the usual setup is the GitHub Container Registry
+(GHCR) for the jobs and the project's GitHub repository for the commits they need
+([An OCI remote](#an-oci-remote)).
+
+## Set up a remote
+
+A project's remotes have names, as git remotes do, and a push goes to one of them. A project
+with no remote has nowhere to push: add one first, with `fxtr remote add`.
+
+To use a hub, run this from the project's directory:
+
+```bash
+uv run fxtr remote add hub --create
+```
+
+This makes a project on the hub at `https://hub.transluce.org`, for the GitHub
+repository of your checkout's `origin`, and adds it as the remote `hub`. Anyone who can read
+the GitHub repository can create a project for it, and is the project's admin.
+`origin` can use an SSH host name from your SSH configuration, such as one for a second GitHub
+account, as long as it resolves to `github.com`.
+`--project-name` names the project (the `[project]` name by default). To use another hub, give
+its URL after the remote's name.
+
+The command opens your browser for the steps that have to happen there, and continues when you
+finish them:
+
+* If this computer is not connected to the hub, you sign in (with GitHub, or an email address)
+  and approve the connection. `uv run fxtr hub login` does this step alone. The connection lasts
+  until the computer goes a year without using it.
+* If the hub's GitHub App is not installed on the repository, you install it on GitHub's page.
+  GitHub then opens a page on the hub; go back to your terminal, where the command continues and
+  makes the project. In an organization you do not own, GitHub asks an owner to approve. If that
+  takes longer than the command waits (15 minutes), run the command again once it is approved.
+
+On a computer with no browser, `--no-browser` prints the links to open elsewhere.
+
+If this directory of the repository already has a hub project, the command lists it and asks whether
+to use it or make another, since a project cannot be deleted. A script gets a refusal that names the
+projects: use `--project-id ID`, or `--another` to make another project.
+
+Outside a terminal, the command does neither step: it stops and says what is needed. A script or
+a CI job signs in with an access token: make one on the hub's account page, under Computers and
+tokens, and set `FXTR_HUB_TOKEN` to it.
+
+To push to a hub project that exists already, give its id, which the project's page on the hub
+shows:
+
+```bash
+uv run fxtr remote add team https://hub.example.com --project-id HUB-PROJECT-ID
+```
+
+`remote add` writes the remote to `pyproject.toml` and updates the project's virtual environment.
+Commit the file, and every checkout of the repository pushes to the same project, with no setup
+beyond signing in. `fxtr run` refuses uncommitted changes, so commit it before your next run; a push
+of a job you have already run does not need it. Add `--local` to write
+it to `fxtr.local.toml` instead, for this computer only. The remote names the hub project by its
+id, so moving or renaming the project's directory in the repository changes nothing.
+
+A project can have any number of remotes, and you can push the same job to each:
+
+```bash
+uv run fxtr remote add archive --create --another --project-name "Lab archive"
+uv run fxtr push JOB --remote archive
+uv run fxtr remote list                # * marks the default
+uv run fxtr remote set-default archive
+uv run fxtr remote rename archive old-archive
+uv run fxtr remote remove old-archive  # the jobs it holds stay there
+```
+
+The default remote is the one a push or a pull uses when it names none. The first remote you add
+becomes the default. `set-default --local` sets this computer's default, which overrides the
+committed one. A project with exactly one remote and no default uses that one.
+
+A remote is a table, which `remote add` writes and you can also write by hand:
+
+```toml pyproject.toml
+[tool.fxtr]
+modules = ["my_experiments.steps"]
+default_remote = "team"
+
+[tool.fxtr.remotes.team]
+kind = "hub"
+url = "https://hub.example.com"
+project = "HUB-PROJECT-ID"   # from the project's page on the hub
+git_remote = "origin"         # the default
+
+[tool.fxtr.remotes.registry]
+kind = "oci"
+repository = "ghcr.io/OWNER/PROJECT-jobs"   # lowercase
+git_remote = "origin"                       # the default
+annotations = { "org.opencontainers.image.source" = "https://github.com/OWNER/PROJECT" }
+```
+
+In `fxtr.local.toml`, `default_remote` goes at the top of the file and a remote is a
+`[remotes.NAME]` table. A name can be configured in only one of the two files. fxtr checks a remote's settings when a push
+or a pull uses it.
+
+<ResponseField name="kind" type="string" required>
+  The kind of remote: `hub` or `oci`.
+</ResponseField>
+
+<ResponseField name="git_remote" type="string" default="origin">
+  The git remote that a push sends the job's commits to, and that a pull fetches them from.
+</ResponseField>
+
+A `hub` remote has these settings. The URL must be `https`, except `http` to `localhost`,
+`127.0.0.1`, or `::1` for a hub running on your computer: your credential is sent with every
+request, and it goes only where no one on the way can read it. Log in to that hub's URL with
+`fxtr hub login URL`.
+
+<ResponseField name="url" type="string" required>
+  The hub's origin.
+</ResponseField>
+
+<ResponseField name="project" type="string" required>
+  The id of the hub project, shown on the project's page on the hub.
+</ResponseField>
+
+An `oci` remote has these settings, and needs the `oci` extra: add it to the
+project's fxtr dependency, for example `fxtr[runner,oci]`.
+`fxtr remote add registry ghcr.io/OWNER/PROJECT-jobs --kind oci` adds one with its
+repository; write its other settings into its table.
+
+<ResponseField name="repository" type="string" required>
+  The registry repository that holds the jobs, as `HOST/PATH`, with no tag.
+</ResponseField>
+
+<ResponseField name="annotations" type="table">
+  More annotations for each push, as names to strings. Names that fxtr writes itself
+  (`org.opencontainers.image.created`, and names that start with `org.transluce.fxtr.`) are
+  refused.
+</ResponseField>
+
+<ResponseField name="auth_file" type="string">
+  The only credential file to read for this remote, relative to the project root.
+</ResponseField>
+
+<ResponseField name="insecure" type="boolean" default="false">
+  Talk to the registry over plain HTTP, for a local registry.
+</ResponseField>
+
+## Push and pull
+
+Only a job that nothing is running can be pushed.
+
+```bash
+uv run fxtr push                     # choose from the newest jobs
+uv run fxtr push JOB                 # publish the job
+uv run fxtr push JOB --tag paper-v1  # add a tag; repeat --tag for more
+```
+
+With no job, the command shows the newest jobs and asks which to push. Press Enter for the first
+one listed; a job that is still running is shown, but cannot be chosen:
+
+```
+  1  word_count (word-count-v1)  succeeded  4 minutes ago  3f2a91c0
+  2  word_count (root)           stopped    2 hours ago    88be1042
+  -  sweep (root)                running    2 hours ago    c01d77e2
+Push which job to hub? [1]:
+```
+
+Outside a terminal, as in a script or a CI job, it lists the jobs and stops without pushing. A
+script names the job; `fxtr jobs list` starts each line with a job's id, newest first:
+
+```bash
+uv run fxtr push "$(uv run fxtr jobs list --limit 1 | cut -d' ' -f1)"
+```
+
+A hub push creates only the tags you supply. An OCI push with no tags generates
+`<workflow>-<time>-<job id>`.
+
+While it works, a push reports each stage on standard error: exporting the job, sending its
+commits, uploading (with how much is sent, for a large record), and on a hub, waiting for the hub
+to take it in. `-q` hides these lines. When it finishes, it prints the job's tags, what the remote calls the push (on a hub the job's record CID, on
+an OCI registry the digest of the artifact it made), and the command that pulls it. A hub push
+also prints the job's visibility when the hub reports it, and the address of the job's page, to
+open or to send to whoever should read it. A pull names what to get: on a hub a
+job, by its id or a tag; on an OCI registry an artifact, by tag or digest. In the other project:
+
+```bash
+uv run fxtr pull JOB                     # on a hub: the job as the hub holds it
+uv run fxtr pull paper-v1                # by tag
+uv run fxtr pull @sha256:...             # on an OCI registry: one push, by its digest
+uv run fxtr pull paper-v1 --update       # bring a job you have up to date
+uv run fxtr pull paper-v1 --replace      # replace your copy of a job with the remote's
+uv run fxtr pull paper-v1 --adopt-cache  # and let later jobs here reuse its results
+```
+
+On a hub, a job's address also works, as a job's details page shows it: `uv run fxtr pull
+https://hub.example.com/projects/PROJECT/jobs/JOB`. It needs no remote, only `fxtr hub login` for
+that hub, from a checkout of the job's repository. Use `--remote NAME` for a remote other than the
+default. `--update` and `--adopt-cache` work as
+they do for `fxtr jobs import` (see
+[Reusing another job's results](../concepts/managing-the-step-cache.mdx#reusing-another-jobs-results)).
+
+A pull needs read access to the job's Git repository, because the job's results name the commits
+that made them. Without that access, nothing is imported. Open the job's page on the hub to read it.
+
+A push also sends the commits the job ran at to the remote's `git_remote`, under refs of fxtr's own
+(`refs/fxtr/pins/...`), and a pull fetches the ones your repository lacks. Commits that fxtr made
+from staged changes travel too. Everyone who pushes or pulls needs push or fetch access to that
+git repository. GitHub does not show these refs among the repository's branches or tags.
+
+## A hub remote
+
+A fxtr hub keeps a team's published jobs, lists them, and shows each in the experiment viewer in
+the browser, with the project's own renderers. A hub project belongs to a GitHub repository, and
+takes jobs from any directory of it. Access comes from GitHub: the repository's collaborators
+have a role on each of its hub projects, and those who can write to it can publish. The account
+that created a project is its admin while it can read the repository, so it can publish there
+too.
+
+**Accounts.** Sign in to the hub with GitHub, or make an account with your email address and a
+password. An email account reads public jobs at once; to use your repositories, confirm your
+address from the email the hub sends, then link your GitHub account from Account settings.
+Besides `remote add --create`, the hub's Connect a project page creates a project: pick a
+repository you can read, and the hub finds the fxtr projects in it.
+
+**Who reads a job.** Each published job has a visibility:
+
+| Visibility | Who can read the job                                                                                         |
+| ---------- | ------------------------------------------------------------------------------------------------------------ |
+| `shared`   | Everyone with a role on the project: the repository's collaborators, and the project's creator. The default. |
+| `private`  | Only you, the job's first publisher, while you have a role on the project.                                   |
+| `public`   | Anyone, signed in or not. They see the project's name and repository, and none of its other jobs.            |
+
+The hub holds each job once. A push sends the job's record, and the hub merges it into its copy
+of the job, so the job's page on the hub keeps its address as the job grows; a push prints the
+hub's *record CID* after it, the content id of the record the hub now exports of the job.
+Tags are names on the hub that point at jobs. A pull names the job by its id, and gets it as
+the hub holds it; a tag gets the job it points at (`tag:TAG` when the tag
+looks like a job id). The job's id can carry the repository, as `OWNER/REPO/JOB`, in a push, a
+pull, or a visibility change: it is checked against the checkout's repository, which guards
+against a job id pasted into the wrong checkout. Pushing a job again after resuming it brings
+the hub's copy up to date, and the hub refuses it if someone else pushed the job since; pull the
+job with `--update`, then push again (the same rule `fxtr jobs import --update` follows). If two
+people each resume the same job, both copies hold attempts the other lacks, so the hub refuses the
+second push and `--update` refuses the pull: a job has one history. There are two ways forward:
+
+* To publish your results, run the workflow again as a new job, with the same inputs and the same
+  `--root`. It reuses your results from the step cache. Push that job.
+* To take the hub's copy, run `fxtr pull JOB --replace`. This removes your attempts of that job
+  from your project, with their events and logs. Their results stay in your step cache.
+
+The record file includes settled attempts, errors, events, and logs, so pulling a job preserves the
+history shown on the hub. Logs hold whatever your code printed. The push also sends the
+project's built view bundle (run `fxtr views build` first), so the hub renders the job with your
+renderers.
+
+Pushing a job the hub has, with the same attachments, sends nothing to the hub; with a rebuilt
+bundle or attachments that an earlier push left out, it syncs the job again. A checkout with no
+built bundle leaves the job's renderers on the hub as they are.
+
+```bash
+uv run fxtr push JOB --tag baseline
+uv run fxtr pull JOB                   # the job as the hub holds it
+uv run fxtr pull baseline              # by tag
+uv run fxtr push JOB --visibility private   # set who can read the job
+uv run fxtr hub visibility JOB public       # change it without pushing
+```
+
+You can set any visibility on a job you first published. A project admin can make a job they
+can read `shared` or `public`, but cannot make someone else's job `private`. A tag never names a
+job that the person setting it cannot read.
+
+**Renderers.** [Some browser features are not available to renderers on a hub](../reference/renderers.mdx#what-renderers-can-do-on-a-hub).
+The hub shows a job with the renderers its push attached: the project's built
+view bundle at the time of the push (`fxtr views build`), stored once per build. That code was
+built on the publisher's computer and the hub does not verify it, so before a job's page loads
+it, the browser says so and asks the reader to load it only if they trust its source; the
+built-in viewer is the alternative. A job pushed without a bundle shows the built-in viewer.
+
+## An OCI remote
+
+On an OCI registry each push makes an artifact, named by its digest, and tags name artifacts.
+Pushing to a tag that already exists moves the tag to the new push, as `docker push` does. The
+digest always names one push, so a pull by digest (`@sha256:...`) gets the same job even after
+its tags move.
+
+### GHCR
+
+The repository is `ghcr.io/OWNER/NAME`, where OWNER is your GitHub user or organization. Your own
+token can push into an organization's packages if the organization lets its members create
+packages.
+
+Set the `org.opencontainers.image.source` annotation before your first push. The first push
+creates the package, and the package is private. The annotation connects the package to your
+GitHub repository, which must have the same owner. After the first push, open the package's
+settings on GitHub and turn on "Inherit access from source repository". Then everyone who can read
+the repository can pull its jobs, and everyone who can write to it can push. You can add other
+annotations too, for example `org.opencontainers.image.description`, which GHCR shows on the
+package's page.
+
+Log in to the registry once with a container tool. fxtr reads the credentials that `docker
+login`, `podman login`, and `oras login` save:
+
+```bash
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u GITHUB_USER --password-stdin
+# or: podman login ghcr.io
+```
+
+Use a classic personal access token with the `write:packages` scope to push and `read:packages` to
+pull. If the GitHub repository is private, the token also needs `repo`. If your organization uses
+SSO, authorize the token for the organization on GitHub.
+
+To give a remote its own credentials, log in with `podman login ghcr.io --authfile PATH` and set
+`auth_file = "PATH"` on the remote. fxtr then reads the credentials for that remote only from this
+file.

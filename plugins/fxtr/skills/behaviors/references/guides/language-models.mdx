@@ -5,7 +5,8 @@ description: "Use the behaviors library to hold conversations and judge outputs 
 
 **behaviors** is a Python library for calling language models from fxtr experiments. It provides:
 
-* model adapters for Anthropic, OpenAI, and OpenAI-compatible services;
+* model adapters for Anthropic, OpenAI, Google's Gemini API, OpenRouter, and OpenAI-compatible
+  services;
 * conversation sessions and **context policies**, which decide what the model sees next:
   scripted or model-simulated user messages, tool results, or custom logic;
 * retries for rate limits and server errors;
@@ -17,12 +18,15 @@ description: "Use the behaviors library to hold conversations and judge outputs 
 Add behaviors, with its provider SDKs, to your project:
 
 ```bash
-uv add "behaviors[models]"
+uv add "behaviors[models]" jsonschema
 ```
+
+`judge` checks a judge's answers with the `jsonschema` package, which behaviors installs only
+with its `docent` extra.
 
 Then commit the updated `pyproject.toml` and `uv.lock`.
 
-Set your provider's API key, `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, in the project's `.env`
+Set your provider's API key, such as `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, in the project's `.env`
 (see [Project configuration](../../../fxtr/references/reference/project-configuration.mdx#env)) or in the environment.
 
 | Provider                           | Adapter                                                                              |
@@ -30,18 +34,26 @@ Set your provider's API key, `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, in the pro
 | OpenAI Responses                   | `from behaviors.implementations.models.openai_responses import OpenAIResponsesAPI`   |
 | Anthropic Messages                 | `from behaviors.implementations.models.anthropic import AnthropicMessagesAPI`        |
 | OpenAI Chat Completions-compatible | `from behaviors.implementations.models.openai_compatible import OpenAICompatibleAPI` |
+| OpenRouter                         | `from behaviors.implementations.models.openrouter import OpenRouterAPI`              |
+| Gemini API                         | `from behaviors.implementations.models.gemini import GeminiGenerateContentAPI`       |
 
 Construct an adapter with the provider's model ID, such as `OpenAIResponsesAPI("gpt-6-luna")`.
 [Choosing models](choosing-models.mdx) shows how to find the IDs your account can
 use, and the [API overview](../reference/api.mdx#provider-adapters) covers the adapters'
-other options, such as `base_url` for a compatible service.
+other options and their API keys, such as `base_url` for a compatible service.
 
 ## A conversation as a step
 
 This step holds a two-turn conversation: it asks a question, then asks the model to explain its
-answer. The model and sampling settings arrive as a configuration entity, so every conversation
-points at the exact settings that produced it. Keep every setting that affects the request in the
-configuration, so that changing one changes the step's inputs.
+answer. Each setting of the model call is a step input of its own:
+
+* `model_name` names the provider and the model, such as `openai/gpt-6-luna`.
+* `sampling` holds the sampling settings.
+* `system_prompt` and `prompt` are the text the model is sent.
+
+This way, every conversation points at the exact settings that produced it, and the step cache
+sees each one. Don't hard-code a setting that affects the request in the step: changing it would
+not change the step's inputs.
 
 ```python
 from dataclasses import dataclass
@@ -54,6 +66,7 @@ from behaviors.implementations.context_policies import (
     context_policy_from_user_simulator,
 )
 from behaviors.implementations.models import chat_session_model_from_api
+from behaviors.implementations.models.anthropic import AnthropicMessagesAPI
 from behaviors.implementations.models.openai_responses import OpenAIResponsesAPI
 from behaviors.rollouts.chat import run_chat_rollout
 from behaviors.types import (
@@ -62,28 +75,40 @@ from behaviors.types import (
 )
 from fxtr.core.entities import BoundID
 from fxtr.entity_defns.dataclass_entity import DataclassEntity
-from fxtr.experiment.handles import ArrayHandle
+from fxtr.experiment.handles import ArrayHandle, ScalarHandle
 from fxtr.experiment.steps import StepContext, step
 from fxtr.experiment.workflows import WorkflowContext, workflow
 
 
 @dataclass(frozen=True)
-class ConversationConfig(DataclassEntity, fxtr_type="org.example.my_experiment.ConversationConfig.v1"):
-    model_name: str
-    sampling: SamplingParams
-    system_prompt: str
+class SamplingParamsEntity(DataclassEntity, fxtr_type="local.my_project.SamplingParamsEntity.v1"):
+    """Sampling settings stored as an entity, so a step can take them as an input."""
+
+    params: SamplingParams
 
 
-def make_api(model_name: str) -> OpenAIResponsesAPI:
-    return OpenAIResponsesAPI(model_name)
+def make_api(model_name: str) -> AnthropicMessagesAPI | OpenAIResponsesAPI:
+    """The adapter for a model named `anthropic/MODEL` or `openai/MODEL`. The caller closes it."""
+    provider, _, model_id = model_name.partition("/")
+    if provider == "anthropic":
+        return AnthropicMessagesAPI(model_id)
+    if provider == "openai":
+        return OpenAIResponsesAPI(model_id)
+    raise ValueError(f"Name a model as anthropic/MODEL or openai/MODEL, not {model_name!r}")
 
 
 @step(name="my_experiment.conversation")
-async def converse(context: StepContext, config: ConversationConfig, prompt: str) -> ChatRollout:
+async def converse(
+    context: StepContext,
+    model_name: str,
+    sampling: SamplingParamsEntity,
+    system_prompt: str,
+    prompt: str,
+) -> ChatRollout:
     """Answer a prompt, then explain the answer in a follow-up turn."""
-    api = make_api(config.model_name)
+    api = make_api(model_name)
     try:
-        model = chat_session_model_from_api(api, config.sampling, retry=RetryConfig())
+        model = chat_session_model_from_api(api, sampling.params, retry=RetryConfig())
         user = ScriptedUserSimulator(messages=(
             UserMessage(content=(ContentText(text=prompt),)),
             UserMessage(content=(ContentText(text="Explain your answer."),)),
@@ -91,7 +116,7 @@ async def converse(context: StepContext, config: ConversationConfig, prompt: str
         policy = context_policy_from_user_simulator(
             user,
             initialization=SetSystemMessage(
-                message=SystemMessage(content=(ContentText(text=config.system_prompt),)),
+                message=SystemMessage(content=(ContentText(text=system_prompt),)),
             ),
         )
         # One more turn than there are scripted prompts, so the rollout can end as completed.
@@ -104,14 +129,21 @@ async def converse(context: StepContext, config: ConversationConfig, prompt: str
 @workflow(name="my_experiment.run")
 async def experiment(
     context: WorkflowContext,
-    configs: Annotated[ArrayHandle[BoundID[ConversationConfig]], "[model: str]"],
+    model_name: Annotated[ArrayHandle[str], "[model: str]"],
+    sampling: ScalarHandle[BoundID[SamplingParamsEntity]],
+    system_prompt: ScalarHandle[str],
     prompts: Annotated[ArrayHandle[str], "[prompt: str]"],
 ) -> Annotated[ArrayHandle[BoundID[ChatRollout]], "[model: str, prompt: str]"]:
     """Hold one conversation per model and prompt."""
     rollouts = context.run_step(
         "conversations",
         converse,
-        {"config": configs, "prompt": prompts},
+        {
+            "model_name": model_name,
+            "sampling": sampling,
+            "system_prompt": system_prompt,
+            "prompt": prompts,
+        },
         map_over=["model", "prompt"],
     )
     return cast(ArrayHandle[BoundID[ChatRollout]], rollouts)
@@ -119,6 +151,12 @@ async def experiment(
 
 In this step:
 
+* `SamplingParamsEntity` is the project's own type. `SamplingParams` is a tagged dataclass, and an
+  fxtr array can't hold one as a value. An array can hold a reference to an entity, so the
+  sampling settings are stored as one. The step passes `sampling.params` on to behaviors.
+* `make_api` builds the adapter from the model name, splitting off the provider prefix. The
+  `model_name` input is the stored record of which model the step called. Building every adapter
+  in this one helper also lets you substitute a fake model for credential-free checks.
 * `chat_session_model_from_api` wraps the adapter as a conversation model. Pass
   `retry=RetryConfig()` to retry rate limits, overloads, and server errors; without it, calls
   aren't retried.
@@ -127,15 +165,13 @@ In this step:
   message.
 * `run_chat_rollout` alternates between the policy and the model, and returns a `ChatRollout`:
   the whole conversation, with its status. The step's output is an entity, so fxtr stores it.
-* Building the adapter in one helper, `make_api`, lets you substitute a fake model for
-  credential-free checks.
 * The adapter is closed in `finally`, because `run_chat_rollout` closes the conversation
   sessions but not the provider client.
 
 Put the step and workflow in a module of your project, here `my_project.conversations`, and list
 it in `[tool.fxtr] modules` (see
-[Project configuration](../../../fxtr/references/reference/project-configuration.mdx)). Launch it with a stored
-configuration per model:
+[Project configuration](../../../fxtr/references/reference/project-configuration.mdx)). Launch it with the stored
+sampling settings and a model name per model:
 
 ```python
 import anyio
@@ -144,19 +180,21 @@ from behaviors.types import SamplingParams
 from fxtr.core.entities import BoundID
 from fxtr.entity_defns.array import Array
 from fxtr.project.running import open_local_client, run_job
-from my_project.conversations import ConversationConfig, experiment
+from my_project.conversations import SamplingParamsEntity, experiment
 
 
 async def main() -> None:
     async with open_local_client(__file__) as client:
-        luna = await client.store(ConversationConfig(
-            model_name="gpt-6-luna",
-            sampling=SamplingParams(max_tokens=2000),
-            system_prompt="Answer concisely.",
-        ))
-        configs = Array.from_items([(("luna",), luna)], ("[model: str]", BoundID[ConversationConfig]))
-        prompts = Array.from_items([(("greeting",), "Hello!")], ("[prompt: str]", str))
-        await run_job(client, experiment, {"configs": configs, "prompts": prompts}, root="conv-v1")
+        sampling = await client.store(SamplingParamsEntity(params=SamplingParams(max_tokens=2000)))
+        inputs = {
+            "model_name": Array.from_items(
+                [(("luna",), "openai/gpt-6-luna")], ("[model: str]", str)
+            ),
+            "sampling": Array.scalar(sampling, BoundID[SamplingParamsEntity]),
+            "system_prompt": Array.scalar("Answer concisely.", str),
+            "prompts": Array.from_items([(("greeting",), "Hello!")], ("[prompt: str]", str)),
+        }
+        await run_job(client, experiment, inputs, root="conv-v1")
 
 
 if __name__ == "__main__":
@@ -168,131 +206,182 @@ For repeated samples of each conversation, add `replicas={"sample": range(n)}` t
 
 ## A judge step
 
-Judging needs no conversation state, so a judge calls the model once with `generate_with_retries`.
-This step grades a conversation's final answer and returns a `Verdict` entity, which the viewer
-can link to. Put it in the same module as the conversation step, whose `make_api` it uses:
+behaviors' `judge` asks a model to assess evidence against a rubric. It checks the model's answer
+against an output schema, and sends a rejected answer back with what was wrong. It returns a
+`Judgment`, an entity the viewer can show. See [Judging](../reference/api.mdx#judging) for
+all of its arguments.
+
+A judge reads a conversation as a `Transcript`. The first step below flattens a rollout into one
+with `ChatRolloutTranscriptProjection`. The second grades the conversation's final answer. Put
+both in the same module as the conversation step, whose `SamplingParamsEntity` and `make_api`
+they use:
 
 ```python
-import re
-from dataclasses import dataclass
-from typing import Annotated
+import json
+from typing import cast
 
 import anyio
 
-from behaviors.implementations.models import (
-    DEFAULT_FAILURE_CATEGORIES_TO_RETRY,
-    generate_with_retries,
-)
+from behaviors.judging.defaults import DEFAULT_ENTITY_TO_PROMPT_TEXT
+from behaviors.judging.judge import Judgment, judge
+from behaviors.rollouts.chat import ChatRolloutTranscriptProjection
 from behaviors.types import (
-    AssistantMessage, ChatMessage, ChatRollout, ContentText, ModelCallFailure,
-    ModelRequest, RetryConfig, RolloutCompleted, SamplingParams, UserMessage,
+    ChatRollout, ContentText, SystemMessage, TextEntity, Transcript, UserMessage,
 )
-from fxtr.core.entities import BoundID
-from fxtr.entity_defns.array import Array
-from fxtr.entity_defns.dataclass_entity import DataclassEntity
+from behaviors.types.json import JSONObject
 from fxtr.experiment.steps import StepContext, step
 
-
-@dataclass(frozen=True)
-class JudgeConfig(DataclassEntity, fxtr_type="org.example.my_experiment.JudgeConfig.v1"):
-    model_name: str
-    sampling: SamplingParams
-    rubric: str
-
-
-@dataclass(frozen=True)
-class Verdict(DataclassEntity, fxtr_type="org.example.my_experiment.Verdict.v1"):
-    score: int | None  # None when there was nothing to grade or the reply had no score
-    judge_reply: str
+# The messages the judge is sent. `judge` fills in each {placeholder}: an entity under its name,
+# and the output schema the answer must fit.
+JUDGE_TEMPLATE = (
+    SystemMessage(content=(ContentText(text="{instructions}"),)),
+    UserMessage(content=(ContentText(text="{transcript}\n\n{rubric}\n\n{output_schema}"),)),
+)
 
 
-def answer_text(messages: tuple[ChatMessage, ...]) -> str:
-    """The assistant's text, without reasoning or tool-use blocks."""
-    return "".join(
-        block.text
-        for message in messages
-        if isinstance(message, AssistantMessage)
-        for block in message.content
-        if isinstance(block, ContentText)
-    )
+@step(name="my_experiment.transcript")
+async def to_transcript(context: StepContext, rollout: ChatRollout) -> Transcript:
+    """The conversation as a transcript, the form a judge reads."""
+    return await ChatRolloutTranscriptProjection().to_transcript(rollout)
 
 
-@step(name="my_experiment.judge")
-async def judge(context: StepContext, judge_config: JudgeConfig, rollout: ChatRollout) -> Verdict:
-    """Grade the conversation's final answer against the rubric from 0 to 10."""
-    if not isinstance(rollout.status, RolloutCompleted) or not rollout.model_turns:
-        return Verdict(score=None, judge_reply=f"not graded: {rollout.status.kind}")
-    prompt = (
-        f"{judge_config.rubric}\n\n"
-        f"Answer to grade:\n{answer_text(rollout.model_turns[-1].messages)}\n\n"
-        "End your reply with a line of the form 'Score: N', where N is from 0 to 10."
-    )
-    request = ModelRequest(
-        context=(UserMessage(content=(ContentText(text=prompt),)),),
-        tools=(),
-        tool_choice=None,
-        parallel_tool_calls=None,
-        sampling=judge_config.sampling,
-    )
-    api = make_api(judge_config.model_name)
+@step(name="my_experiment.grade_answer")
+async def grade_answer(
+    context: StepContext,
+    model_name: str,
+    sampling: SamplingParamsEntity,
+    instructions: TextEntity,
+    rubric: TextEntity,
+    output_schema: TextEntity,
+    transcript: Transcript,
+) -> Judgment:
+    """Grade the conversation's final answer against the rubric."""
+    api = make_api(model_name)
     try:
-        response = await generate_with_retries(
+        return await judge(
             api,
-            request,
-            retry=RetryConfig(),
-            failure_categories_to_retry=DEFAULT_FAILURE_CATEGORIES_TO_RETRY,
+            context_template=JUDGE_TEMPLATE,
+            entities={"instructions": instructions, "rubric": rubric, "transcript": transcript},
+            entity_to_prompt_text=DEFAULT_ENTITY_TO_PROMPT_TEXT,
+            output_schema=cast(JSONObject, json.loads(output_schema.text)),
+            sampling=sampling.params,
         )
     finally:
         with anyio.CancelScope(shield=True):
             await api.aclose()
-    if isinstance(response, ModelCallFailure):
-        # Raise rather than return: a returned failure would be cached as the result.
-        raise RuntimeError(f"judge call failed ({response.category}): {response.description}")
-    reply = answer_text(response.output)
-    match = re.search(r"Score:\s*(\d+)\s*$", reply)
-    score = int(match.group(1)) if match else None
-    return Verdict(score=score if score is not None and 0 <= score <= 10 else None, judge_reply=reply)
 ```
 
-Schedule it in the workflow, mapped over the conversations, with the judge configuration as a
-single stored input. The `judge_config: JudgeConfig` and `rollout: ChatRollout` annotations load
-the entities before the body runs:
+The judge's settings are step inputs, as the conversation's are:
+
+* `model_name` and `sampling` are the judge model and its sampling settings. A `Judgment` does
+  not record a model name: the `model_name` input is that record.
+* `instructions`, `rubric`, and `output_schema` are `TextEntity` inputs. The output schema is
+  JSON text, which the step parses.
+* The judgment records the ID of each entity it was given, and every request and response.
+
+Schedule both steps in the workflow, mapped over the conversations. The judge's settings are
+workflow inputs with no dimensions, so every call gets the same ones:
 
 ```python
-verdicts = context.run_step(
+# Workflow inputs:
+#     judge_model_name: ScalarHandle[str]
+#     judge_sampling: ScalarHandle[BoundID[SamplingParamsEntity]]
+#     judge_instructions: ScalarHandle[BoundID[TextEntity]]
+#     rubric: ScalarHandle[BoundID[TextEntity]]
+#     output_schema: ScalarHandle[BoundID[TextEntity]]
+transcripts = context.run_step(
+    "transcripts", to_transcript, {"rollout": rollouts}, map_over=["model", "prompt"]
+)
+judgments = context.run_step(
     "judge_final_answers",
-    judge,
-    {"judge_config": judge_config, "rollout": rollouts},
+    grade_answer,
+    {
+        "model_name": judge_model_name,
+        "sampling": judge_sampling,
+        "instructions": judge_instructions,
+        "rubric": rubric,
+        "output_schema": output_schema,
+        "transcript": transcripts,
+    },
     map_over=["model", "prompt"],
 )
 ```
 
-The judge follows the [return or raise](../../../fxtr/references/concepts/workflows-and-steps.mdx#failures-return-or-raise)
-rule: it returns a `Verdict` for outcomes every attempt would reproduce, such as a conversation
-that never completed or a reply without a score. It raises when the model call still fails after
-its retries, so resuming the job calls the judge again.
+The launcher stores the judge's text inputs. `DEFAULT_SYSTEM_INSTRUCTIONS_ENTITY` is behaviors'
+default judge instructions. The functions in `behaviors.judging.schemas` (`binary_schema`,
+`continuous_schema`, `categorical_schema`, and `structured_schema`) write common output schemas.
+Each schema starts with a `discussion` field, so the judge explains before it decides:
+
+```python
+import json
+
+from behaviors.judging.defaults import DEFAULT_SYSTEM_INSTRUCTIONS_ENTITY
+from behaviors.judging.schemas import continuous_schema
+from behaviors.types import TextEntity
+
+RUBRIC = "Grade how correct and well-explained the assistant's final answer is."
+OUTPUT_SCHEMA = continuous_schema(
+    score_description="How good the final answer is, from 0 to 10.", minimum=0, maximum=10
+)
+
+# In `main`, with the other inputs:
+inputs |= {
+    "judge_model_name": Array.scalar("openai/gpt-6-luna", str),
+    "judge_sampling": Array.scalar(sampling, BoundID[SamplingParamsEntity]),
+    "judge_instructions": Array.scalar(
+        await client.store(DEFAULT_SYSTEM_INSTRUCTIONS_ENTITY), BoundID[TextEntity]
+    ),
+    "rubric": Array.scalar(await client.store(TextEntity(text=RUBRIC)), BoundID[TextEntity]),
+    "output_schema": Array.scalar(
+        await client.store(TextEntity(text=json.dumps(OUTPUT_SCHEMA))), BoundID[TextEntity]
+    ),
+}
+```
+
+`judge` follows the [return or raise](../../../fxtr/references/concepts/workflows-and-steps.mdx#failures-return-or-raise)
+rule:
+
+* It returns a `Judgment` whose `output` is `None` when every attempt would end the same way. That
+  is when the model gave no accepted answer in `max_answers` tries, or when the request is too
+  long for the model's context. The step returns it, so the result is cached.
+* It raises `ModelCallFailedError` when a model call fails for any other reason, such as a rate
+  limit that outlasts its retries, an outage, or a wrong API key. The step raises too, so resuming
+  the job calls the judge again.
+
+The transcript step flattens every conversation, including one that didn't complete, so the judge
+grades it as far as it went. To grade only completed conversations, check `rollout.status` first (see
+[Check a rollout's status before scoring it](#rollouts-settings-and-testing)).
 
 ## Summarize the verdicts
 
-A reduction step takes one model's verdict references and loads them:
+A reduction step takes one model's judgment references and loads them:
 
 ```python
+from typing import Annotated, cast
+
+from fxtr.core.entities import BoundID
+from fxtr.entity_defns.array import Array
+
+
 @step(name="my_experiment.mean_score")
 async def mean_score(
     context: StepContext,
-    verdicts: Annotated[Array[BoundID[Verdict]], "[prompt: str]"],
+    judgments: Annotated[Array[BoundID[Judgment]], "[prompt: str]"],
 ) -> float | None:
     """Average the judge's scores across prompts."""
-    scores: list[int] = []
-    for ref in verdicts.values():
-        verdict = await context.load(ref)
-        if verdict.score is not None:
-            scores.append(verdict.score)
+    scores: list[float] = []
+    for ref in judgments.values():
+        judgment = await context.load(ref)
+        # `output` is None when the judge never gave an accepted answer.
+        if judgment.output is not None:
+            scores.append(float(cast(float, judgment.output["score"])))
     return sum(scores) / len(scores) if scores else None
 
 
 # In the workflow:
-mean_scores = context.run_step("mean_scores", mean_score, {"verdicts": verdicts}, map_over=["model"])
+mean_scores = context.run_step(
+    "mean_scores", mean_score, {"judgments": judgments}, map_over=["model"]
+)
 ```
 
 ## Rollouts, settings, and testing
@@ -315,10 +404,11 @@ mean_scores = context.run_step("mean_scores", mean_score, {"verdicts": verdicts}
 
   <Accordion title="Sampling settings vary by provider">
     `SamplingParams` covers `max_tokens`, `temperature`, `top_p`, `stop_sequences`, `reasoning`,
-    and provider-specific `extra`. Which settings take effect depends on the adapter and model:
-    for example, `OpenAIResponsesAPI` doesn't apply `stop_sequences`. Leave a setting unset
-    unless your adapter and model support it. See
-    [Sampling settings](../reference/api.mdx#sampling-settings).
+    `speed`, and provider-specific `extra`. Which settings take effect depends on the adapter and model:
+    for example, `OpenAIResponsesAPI` doesn't apply `stop_sequences`, and the result's
+    `adaptation_losses` lists that change. Leave a setting unset unless your adapter and model support
+    it. See [Sampling settings](../reference/api.mdx#sampling-settings) and
+    [What an adapter changes](dialects-and-adaptation.mdx#what-an-adapter-changes).
   </Accordion>
 
   <Accordion title="Test without credentials">

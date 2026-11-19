@@ -22,7 +22,8 @@ already depends on fxtr, `uv run fxtr new` does the same):
 pyproject.toml            the project, its dependency on fxtr, and [tool.fxtr]
 README.md                 how to run it
 .gitignore                fxtr.local.toml, .env, .venv/, __pycache__/, .fxtr/ (where
-                          `fxtr view` records its address), node_modules/, and dist/
+                          `fxtr view` records its address and the jobs you star),
+                          node_modules/, and dist/
 .env                      API keys for model providers
 src/my_project/
     __init__.py
@@ -91,6 +92,17 @@ package = "views"
   table the project has no renderers of its own, and the viewer uses its defaults.
 </ResponseField>
 
+<ResponseField name="[tool.fxtr] default_remote" type="string">
+  The remote that `fxtr push` and `fxtr pull` use when they name none. `fxtr remote add` sets it
+  to the first remote, and `fxtr remote set-default` changes it.
+</ResponseField>
+
+<ResponseField name="[tool.fxtr.remotes.NAME]" type="table">
+  A remote that every checkout of the project shares, which `fxtr remote add` writes. Its `kind`
+  says which other settings it has (see
+  [Pushing and pulling jobs](../guides/pushing-and-pulling-jobs.mdx#set-up-a-remote)).
+</ResponseField>
+
 The other settings are uv's and Python packaging's, chosen for fxtr:
 
 * `package = true` installs the project into its own virtual environment, so that the `fxtr`
@@ -126,12 +138,24 @@ schema = "fxtr_my_project"
   `_`. `fxtr init --schema` writes another.
 </ResponseField>
 
-`fxtr init --force` replaces an existing file. Everything the project stores lives in its schema:
+`fxtr init --force` replaces the database settings of an existing file, and keeps the rest of
+it. Everything the project stores lives in its schema:
 jobs, project arrays, entities, and the step cache. Resuming or viewing a job therefore needs the
 configuration that launched it. The project's client creates the tables when they are missing, but
 it doesn't start the server or create the database. To keep trial runs apart from real results,
 point the project at a scratch schema while experimenting (see
 [Before you launch](../guides/running-and-viewing-jobs.mdx#before-you-launch)).
+
+<ResponseField name="default_remote" type="string">
+  This computer's default remote, which overrides `[tool.fxtr] default_remote`.
+  `fxtr remote set-default --local` writes it.
+</ResponseField>
+
+<ResponseField name="[remotes.NAME]" type="table">
+  A remote that only this computer uses, which `fxtr remote add --local` writes. A name can be
+  configured in only one of the two files (see
+  [Pushing and pulling jobs](../guides/pushing-and-pulling-jobs.mdx#set-up-a-remote)).
+</ResponseField>
 
 fxtr reads both files strictly: a setting it doesn't know, or a value of the wrong type, is an
 error, so a misspelled setting is never silently ignored.

@@ -27,7 +27,7 @@ describes each command's options.
   Write `fxtr.local.toml`, which says where this machine reaches the project's database, and
   create the project's tables. The URL is a SQLAlchemy `postgresql+asyncpg://...` URL. `--schema`
   picks the database schema (by default `fxtr_` followed by the project's name), and `--force`
-  replaces an existing file. The `FXTR_DATABASE_URL` environment variable overrides the file's
+  replaces the database settings of an existing file and keeps the rest. The `FXTR_DATABASE_URL` environment variable overrides the file's
   URL.
 </ResponseField>
 
@@ -50,7 +50,8 @@ describes each command's options.
 </ResponseField>
 
 <ResponseField name="fxtr jobs list">
-  List every job, newest first.
+  List every job, newest first. `--limit N` lists only the newest N. Each line starts with the
+  job's id.
 </ResponseField>
 
 <ResponseField name="fxtr jobs status JOB">
@@ -71,9 +72,13 @@ describes each command's options.
   Add the job in a record file written by `fxtr jobs export` to this project, with everything it
   reaches. The commits its results were produced at must exist in this repository, and the job
   must not be in the project already unless `--update` is given, which brings a job the project
-  has up to date from a later record of it. The step cache is left alone unless `--adopt-cache`
+  has up to date from a later record of it, or `--replace`, which replaces the project's copy with
+  the record and removes the copy's job attempts that the record lacks (their results stay in the
+  step cache). The step cache is left alone unless `--adopt-cache`
   is given, which makes the cache offer the job's results as `fxtr cache adopt` does; with it,
-  `--overwrite-cache-conflicts` replaces entries that hold a different request's result.
+  `--overwrite-cache-conflicts` replaces entries that hold a different request's result. A
+  record file can come from anyone, so an import refuses one over 512 MiB, or one that
+  decompresses to more than 512 MiB: the sizes a hub accepts of a push.
 </ResponseField>
 
 ## Cache
@@ -121,4 +126,86 @@ describes each command's options.
   Build the project's renderer package into its view bundle, which `fxtr view` serves. A failed
   build keeps the previous bundle. A running `fxtr view` rebuilds the bundle by itself; this is
   for building without one.
+</ResponseField>
+
+## Pushing and pulling jobs
+
+See [Pushing and pulling jobs](../guides/pushing-and-pulling-jobs.mdx) for how remotes work.
+
+<ResponseField name="fxtr remote add NAME [URL]">
+  Add a remote named NAME, to `pyproject.toml`, or with `--local` to `fxtr.local.toml` for this
+  computer only. A `hub` remote (the default `--kind`) takes the hub's URL, by default
+  `https://hub.transluce.org`, and either `--project-id ID`, an existing hub project, or
+  `--create`, which makes a hub project for the checkout's GitHub repository: `--project-name`
+  names it, and `--repository OWNER/NAME` names the repository when
+  the git remote is not on GitHub. In a terminal, `--create` opens the browser to connect this
+  computer and to install the hub's GitHub App on the repository, if they are needed, and waits;
+  `--no-browser` prints the links instead. If this directory of the repository already has a hub
+  project, `--create` asks whether to use it; `--another` makes another project without asking.
+  `--kind oci` takes a registry repository in place of the URL.
+  `--git-remote` names the git remote for the jobs' commits (`origin` by default). The first
+  remote becomes the default.
+</ResponseField>
+
+<ResponseField name="fxtr remote list">
+  List the project's remotes, the file of each, and `*` on the default.
+</ResponseField>
+
+<ResponseField name="fxtr remote rename OLD NEW">
+  Rename a remote, and the default remote if it names it.
+</ResponseField>
+
+<ResponseField name="fxtr remote remove NAME">
+  Remove a remote from the project's configuration. What it holds stays there.
+</ResponseField>
+
+<ResponseField name="fxtr remote set-default NAME">
+  Make NAME the remote a push or a pull uses when it names none, in `pyproject.toml`, or with
+  `--local` for this computer only, overriding the committed default.
+</ResponseField>
+
+<ResponseField name="fxtr push [JOB]">
+  Send a stopped or succeeded job to one of the project's remotes, with the commits its results
+  were produced at, and print the command that pulls it. JOB is the job's id; on a
+  hub, also `owner/repo/JOB`, which is checked against the checkout's repository. Without JOB, the
+  command shows the newest jobs and asks which to push; outside a terminal it lists them and
+  stops, without pushing. `--tag` sets a
+  tag; repeat it for more. `--remote` names a remote other than the default.
+
+  * To an OCI registry, a push without `--tag` sets a default tag made from the job, and a tag
+    that exists moves to this job.
+  * To a `hub` remote, which holds each job once, a push brings the hub's copy of the job up to
+    date (refused if someone else pushed the job since you last pulled it) and sets only the
+    tags you give; moving a tag that names another job needs the maintainer role. A push also
+    sends how the job's attempts went (their errors and logs) and the project's built view
+    bundle, and prints the id of the record the hub now exports of the job and the address of
+    the job's page. `--visibility
+    private|shared|public` sets who can read the job. Without it, a job's first push makes it
+    `shared`, and a later push keeps the job's level.
+</ResponseField>
+
+<ResponseField name="fxtr pull REF">
+  Get the job that REF names on a remote, with the commits it needs, and import it. On an OCI
+  registry, REF names an artifact: a tag, or `@` and its digest. On a hub, REF is a job's id
+  (or `owner/repo/JOB`), which gets the job as the hub holds it, or a tag (`tag:TAG` when the
+  tag looks like a job id). On a hub, REF can also be the address of a job's page, which needs no
+  remote. Takes `--update`, `--replace`, `--adopt-cache`, and
+  `--overwrite-cache-conflicts` like `fxtr jobs import`, and `--remote` like
+  `fxtr push`.
+</ResponseField>
+
+<ResponseField name="fxtr hub login [URL]">
+  Connect this computer to the hub at URL, by default `https://hub.transluce.org`. It opens your
+  browser, where you sign in and approve this computer's connection code, and saves the
+  computer's credential in your configuration directory, where `hub` remotes with that URL find
+  it. The connection lasts until the computer goes a year without using it. `--no-browser`
+  prints the link instead of opening it; `--token-stdin` reads a credential from standard input.
+  `FXTR_HUB_TOKEN`, when set, is used instead of a saved credential: a script or CI job sets it
+  to an access token made on the hub's account page (Computers and tokens).
+</ResponseField>
+
+<ResponseField name="fxtr hub visibility JOB LEVEL">
+  Set who can read a published job on the hub: `private` (only its first publisher), `shared`
+  (everyone with a role on the project), or `public` (anyone). Takes `--remote` like
+  `fxtr push`.
 </ResponseField>

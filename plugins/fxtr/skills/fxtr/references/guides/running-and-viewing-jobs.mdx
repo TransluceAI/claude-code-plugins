@@ -127,7 +127,9 @@ The first sentence of each step's and workflow's docstring is what appears on it
 those as short imperative sentences that tell a reader what the operation does, such as "Compute
 mean scores across judges." Leave out edge cases and what the step is mapped over, which the card
 already shows. For progress worth reading while a step runs, write log lines with
-`context.log(...)`.
+`context.log(...)`, or publish the result so far with `context.preview(...)`, which the step's
+panel shows as it changes
+(see [Workflows and steps](../concepts/workflows-and-steps.mdx#the-context-argument)).
 
 `EXPERIMENT.md`, at the project root, describes the experiment for someone reading its results:
 the question it asks, what it compares or measures and why, and how each score or judgment is
@@ -230,20 +232,20 @@ as abandoned, and resume takes it over.
 
 ## Inspect and cancel jobs
 
-| Command                              | Python                                                 | Purpose                                      |
-| ------------------------------------ | ------------------------------------------------------ | -------------------------------------------- |
-| `fxtr jobs list`                     | `await client.list_jobs()`                             | Every job, newest first.                     |
-| `fxtr jobs status JOB`               | `await handle.status()`                                | Where a job is, and why it stopped.          |
-| `fxtr jobs cancel JOB`               | `await handle.cancel()`                                | Ask the process running a job to stop it.    |
-| `fxtr cache list`                    | `await client.list_cache_entries(prefix=...)`          | The cache's entries.                         |
-| `fxtr cache list --conflicts-in JOB` | `await client.list_cache_entries(conflicts_in=job_id)` | The entries a job is in cache conflict with. |
+| Command                              | Python                                                 | Purpose                                                              |
+| ------------------------------------ | ------------------------------------------------------ | -------------------------------------------------------------------- |
+| `fxtr jobs list`                     | `await client.list_jobs()`                             | Every job, newest first; `--limit N` (`limit=N`) gives the newest N. |
+| `fxtr jobs status JOB`               | `await handle.status()`                                | Where a job is, and why it stopped.                                  |
+| `fxtr jobs cancel JOB`               | `await handle.cancel()`                                | Ask the process running a job to stop it.                            |
+| `fxtr cache list`                    | `await client.list_cache_entries(prefix=...)`          | The cache's entries.                                                 |
+| `fxtr cache list --conflicts-in JOB` | `await client.list_cache_entries(conflicts_in=job_id)` | The entries a job is in cache conflict with.                         |
 
 In Python, `handle = await client.job(job_id)` attaches to an existing job without starting it.
 
 ## Share a job with another project
 
 A finished job can be written to a file and imported into another copy of the project, for
-example a collaborator's, with its results and everything they reference:
+example a collaborator's, with its results, settled attempts, errors, and logs:
 
 ```bash
 uv run fxtr jobs export 3fa3df92-2edb-4088-9e1f-a99d28b7ec77 results/qa-v1.car
@@ -256,4 +258,10 @@ appears in the viewer and can be resumed like any other. By default its results 
 step cache; `--adopt-cache` puts them in, so new jobs in the importing project reuse them (see
 [Reusing another job's results](../concepts/managing-the-step-cache.mdx#reusing-another-jobs-results)).
 To refresh a job that was imported earlier from a later record of it, import with `--update`.
-From Python, the client has `export_job(job_id, path)` and `import_job(path, update=...)`.
+If you also resumed the job here, `--update` refuses the record; `--replace` takes the record's
+version of the job, and removes your attempts that it lacks, while their results stay in the step
+cache.
+From Python, the client has `export_job(job_id, path)` and `import_job(path, update=..., replace=...)`.
+
+To share jobs through a hub or a registry instead of a file, see
+[Pushing and pulling jobs](pushing-and-pulling-jobs.mdx).

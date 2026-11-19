@@ -190,7 +190,7 @@ dimensions to map over, and the runner:
 flowchart LR
   M["models<br/>[model]"] --> R["run_step(answer, map_over=[model, prompt])"]
   P["prompts<br/>[prompt]"] --> R
-  C["judge config<br/>[]  (broadcast)"] --> R
+  C["sampling<br/>[]  (broadcast)"] --> R
   R --> O["answers<br/>[model, prompt]"]
 ```
 
@@ -280,15 +280,15 @@ has. You can choose to instead use an inner join by passing `join="inner"`, whic
 This is the usual way to pass pieces of a dataset to a step that expects simple values:
 
 ```python
-# cases:        [case_id: str]: Case     (a struct with prompt and expected fields)
-# judge_config: []: BoundID[JudgeConfig]  (a scalar, broadcast to every call)
+# cases:      [case_id: str]: Case  (a struct with prompt and expected fields)
+# model_name: []: str               (a scalar, broadcast to every call)
 questions = cases.field("prompt").collect()
 questions.expect_type(("[case_id: str]", str))  # the field, still keyed by case_id
 
 answers = context.run_step(
     "answer",
     answer,
-    {"question": questions, "config": judge_config},
+    {"question": questions, "model_name": model_name},
     map_over=["case_id"],
 )
 answers.expect_type(("[case_id: str]", BoundID[Answer]))
@@ -389,7 +389,7 @@ hard.expect_type(("[case_id: str]", Case))  # fewer rows, same dimensions
 answers = context.run_step(
     "answer_hard",
     answer,
-    {"question": hard.field("prompt").collect(), "config": judge_config},
+    {"question": hard.field("prompt").collect(), "model_name": model_name},
     map_over=["case_id"],
 )
 answers.expect_type(("[case_id: str]", BoundID[Answer]))  # one row per hard case

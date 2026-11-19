@@ -80,7 +80,7 @@ A step's pathname is its default cache address. That has two consequences worth 
   the launcher, as in `root=f"qa-{uuid.uuid4()}"`, and never inside a workflow.
 
 Names are not escaped, so never put `/`, `[`, or `]` in a local name, and make names specific:
-`comparison_judge_config` reads better in an address than `config`.
+`judge_helpfulness` reads better in an address than `judge`.
 
 ### Customizing an address
 
@@ -242,8 +242,10 @@ the code produced each result, and the system cannot protect you if you forget. 
   logic. Give the new argument a default that preserves the old behavior. Existing results keep
   matching, because their inputs are unchanged, and new results computed with the new option have
   different fingerprints and so can never be confused with old ones.
-  (You can also bundle configuration arguments into a [config entity](entities-and-custom-types.mdx),
-  and handle configuration changes by adding a field to that entity.)
+  You can bundle configuration arguments into a [config entity](entities-and-custom-types.mdx),
+  and handle configuration changes by adding a field to that entity.
+  Or, you can make each configuration argument its own entity. The fingerprint then tracks each setting,
+  and each result points at the exact inputs that produced it.
 * **If the change is too large for a flag, give the step a new name**, for example by adding a
   version suffix: `qa.answer` becomes `qa.answer_v2`. The new name gets fresh cache entries, old
   results stay intact and attributable, and jobs that still reference the old step continue to

@@ -41,8 +41,8 @@ When the completion contains `</transcript>`, the user has left: the simulator e
 and nothing around the marker is sent. The model is called through the completions endpoint
 (`/v1/completions`) of an OpenAI-compatible server, such as vLLM or sglang.
 
-Its settings are a `BaseModelUserSimulatorConfig`, a tagged dataclass you can keep in your
-step's configuration entity:
+Its settings are a `BaseModelUserSimulatorConfig`, a tagged dataclass. A step takes it inside
+an entity, as [the step below](#a-step-with-a-simulated-user) does:
 
 ```python
 from behaviors.implementations.context_policies.base_model_prompt import (
@@ -146,9 +146,17 @@ record no rollout.
 
 ### A step with a simulated user
 
-This step has a steered, base-model user talk to the subject model. The simulators' settings are
-in the configuration entity; where the base model is served is not, since it doesn't change what
-is sampled:
+This step has a steered, base-model user talk to the subject model. Each setting is a step input
+of its own:
+
+* `subject_model_name` and `subject_sampling` are the subject model and its sampling settings, as
+  in the [conversation step](language-models.mdx#a-conversation-as-a-step), whose
+  `SamplingParamsEntity` and `make_api` this step uses.
+* `pilot_model_name` is the pilot model.
+* `simulated_user` holds the two simulators' configurations. They are tagged dataclasses, and an
+  fxtr array can't hold one as a value, so they are stored in an entity, `SimulatedUserConfigs`.
+
+Where the base model is served is not an input, since it doesn't change what is sampled:
 
 ```python
 import os
@@ -166,37 +174,44 @@ from behaviors.implementations.context_policies.pilot_steered_user_simulator imp
     PilotSteeredUserSimulator, PilotSteeredUserSimulatorConfig,
 )
 from behaviors.implementations.models import chat_session_model_from_api
-from behaviors.implementations.models.openai_responses import OpenAIResponsesAPI
 from behaviors.rollouts.chat import run_chat_rollout
-from behaviors.types import ChatRollout, RetryConfig, SamplingParams
+from behaviors.types import ChatRollout, RetryConfig
 from fxtr.entity_defns.dataclass_entity import DataclassEntity
 from fxtr.experiment.steps import StepContext, step
+from my_project.conversations import SamplingParamsEntity, make_api
 
 
 @dataclass(frozen=True)
-class SimulatedChatConfig(DataclassEntity, fxtr_type="org.example.my_experiment.SimulatedChatConfig.v1"):
-    subject_model: str
-    subject_sampling: SamplingParams
+class SimulatedUserConfigs(DataclassEntity, fxtr_type="local.my_project.SimulatedUserConfigs.v1"):
     user: BaseModelUserSimulatorConfig
-    pilot_model: str
     pilot: PilotSteeredUserSimulatorConfig
 
 
 @step(name="my_experiment.simulated_chat")
-async def simulated_chat(context: StepContext, config: SimulatedChatConfig) -> ChatRollout:
+async def simulated_chat(
+    context: StepContext,
+    subject_model_name: str,
+    subject_sampling: SamplingParamsEntity,
+    pilot_model_name: str,
+    simulated_user: SimulatedUserConfigs,
+) -> ChatRollout:
     """A conversation between the subject model and a steered, simulated user."""
-    subject_api = OpenAIResponsesAPI(config.subject_model)
-    pilot_api = OpenAIResponsesAPI(config.pilot_model)
+    subject_api = make_api(subject_model_name)
+    pilot_api = make_api(pilot_model_name)
     base_user = BaseModelUserSimulator(
-        config.user,
+        simulated_user.user,
         base_url=os.environ["BASE_MODEL_URL"],  # Such as http://localhost:8000/v1.
         api_key=os.environ.get("BASE_MODEL_API_KEY", "none"),  # The SDK needs some key.
         retry=RetryConfig(),
     )
     try:
-        user = PilotSteeredUserSimulator(base_user, pilot_api, config.pilot, retry=RetryConfig())
+        user = PilotSteeredUserSimulator(
+            base_user, pilot_api, simulated_user.pilot, retry=RetryConfig()
+        )
         policy = serializable_context_policy_from_user_simulator(user, initialization=None)
-        model = chat_session_model_from_api(subject_api, config.subject_sampling, retry=RetryConfig())
+        model = chat_session_model_from_api(
+            subject_api, subject_sampling.params, retry=RetryConfig()
+        )
         # The user ends the conversation; max_turns caps one that runs on.
         return await run_chat_rollout(model, policy, max_turns=12)
     finally:

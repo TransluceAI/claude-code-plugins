@@ -15,13 +15,14 @@ Entities are for three kinds of data:
 * **Objects with irregular structure.** Array values must follow one fixed schema, but an entity
   can hold a tagged union, nested optional parts, or a blob of JSON, because it is serialized as a
   unit rather than laid out in columns.
-* **Things other objects should point to.** A judge's verdict about a transcript naturally
-  references the transcript. A result should reference the configuration that produced it. Entity
-  references make these links explicit, and the viewer renders them as links you can click.
+* **Things other objects should point to.** One example includes the transcripts that you pass to a
+  judge. When these transcripts are wrapped as entities, it allows fxtr to explicitly link to relevant
+  parts of the transcript when your LLM judge makes claims in its verdict. These links are rendered in
+  the viewer and are clickable.
 
 Because an entity's ID is a hash of its content, identical content always has the same ID and is
-stored once. Storing the same model configuration from a hundred steps costs one record, and two
-jobs that reference it reference the very same thing.
+stored once. Storing the same entity from a hundred steps costs one record, and two jobs that
+reference it reference the very same thing.
 
 ## Defining entities
 
@@ -35,14 +36,14 @@ from fxtr.entity_defns.dataclass_entity import DataclassEntity
 
 
 @dataclass(frozen=True)
-class ModelConfig(DataclassEntity, fxtr_type="org.example.qa.ModelConfig.v1"):
-    model_name: str
-    temperature: float
+class Document(DataclassEntity, fxtr_type="org.example.qa.Document.v1"):
+    title: str
+    text: str  # the whole document, often thousands of words
 
 
 @dataclass(frozen=True)
 class Answer(DataclassEntity, fxtr_type="org.example.qa.Answer.v1"):
-    config: BoundID[ModelConfig]
+    document: BoundID[Document]
     question: str
     text: str
 ```
@@ -54,8 +55,8 @@ that a changed type can be introduced under a new name while old records keep th
 
 Fields may be primitives, tuples and frozen sets, nested dataclasses, `BoundID[T]` references to
 other entities, nullable and union types, and recursive JSON values. The `Answer` above points at
-its `ModelConfig` by reference, so every answer records exactly which configuration produced it
-without copying the configuration into every record.
+its `Document` by reference. Every answer about the same document shares one stored copy of the
+document, without copying the entire text into every record.
 
 ### Inline tagged unions
 
@@ -84,8 +85,52 @@ class Verdict(DataclassEntity, fxtr_type="org.example.qa.Verdict.v1"):
     outcome: Scored | Refused
 ```
 
+behaviors' `Judgment` uses the same structure: each of its attempts records the model's response
+or the failure of the call, as `ModelResponse | ModelCallFailure`.
+
 This is the kind of structure an array value cannot hold, and one of the main reasons to reach for
 an entity.
+
+The same limit applies to a step's inputs, since every input is an array. Array values must be
+primitives, structs, lists, or entity references. A tagged dataclass or a union can't be one. To
+pass such a value to a step, wrap it in a small entity and pass a reference to that. Sampling
+settings are a common case (behaviors' `SamplingParams` is a tagged dataclass):
+
+```python
+from behaviors.types import SamplingParams
+
+
+@dataclass(frozen=True)
+class SamplingParamsEntity(DataclassEntity, fxtr_type="local.my_project.SamplingParamsEntity.v1"):
+    params: SamplingParams
+```
+
+Keep the entity to the one value an array can't hold. Pass each other setting, such as a model's
+name, as its own input.
+
+### Partial values
+
+A value still being produced, such as a conversation whose model is mid-reply, does not yet have
+every field its class requires. `Partial[T]` holds one without loosening `T`: any of `T`'s fields
+may be `None`, and wherever a field holds a tagged dataclass `D` (directly, in a union, or as the
+elements of a tuple, list, or dict), the value there may be a `Partial[D]` instead. Fields not
+given take their dataclass default, or `None`.
+
+```python
+from fxtr.entity_defns.partial import Partial
+
+draft = Partial(Verdict, outcome=Partial(Scored))
+draft.answer      # None
+draft = draft.replace(outcome=Scored(score=0.8))
+draft.complete()  # IncompletePartialError: answer is still None
+```
+
+`complete()` returns the finished `T`, completing nested partial values, once every required field
+is set; it raises `IncompletePartialError`, naming the path of each missing field, until then.
+`Partial.from_value(value)` wraps a finished value. A partial value has its own type tag, so it is
+never mistaken for, or loaded as, a finished `T`. It can be a field of a tagged dataclass or entity
+(`value: Partial[Verdict]`), and it is what a step publishes with `context.preview` (see
+[Workflows and steps](workflows-and-steps.mdx#the-context-argument)).
 
 <Note>
   fxtr currently converts dataclasses to and from their stored form with the
@@ -144,13 +189,15 @@ read it back. You can store from a step context, a workflow context, or the proj
 launcher, and all three expose the same two methods:
 
 ```python
-ref = await context.store(ModelConfig(model_name="gpt-6-luna", temperature=0.2))
-config = await context.load(ref)
+ref = await context.store(
+    Document(title="Refund policy", text="Refunds are issued within 30 days.")
+)
+document = await context.load(ref)
 ```
 
 A `BoundID` is cheap to pass around and to put in other entities and arrays. A bare `EntityID`,
 such as one read out of an array of untyped IDs, needs its type to be loaded:
-`await context.load(entity_id, as_type=ModelConfig)`.
+`await context.load(entity_id, as_type=Document)`.
 
 The only way to get an entity back is to have its ID, and storing an entity gives it no name and
 puts it in no list you can browse. So for an entity to be retrievable later, something that is
@@ -165,12 +212,21 @@ Arrays hold references, never entities themselves. The common pattern is to stor
 then build the array from the references, with `BoundID[T]` as the value type:
 
 ```python
-refs = [((name,), await client.store(config)) for name, config in configs.items()]
-models = Array.from_items(refs, ("[model: str]", BoundID[ModelConfig]))
+refs = [((doc_id,), await client.store(document)) for doc_id, document in documents.items()]
+docs = Array.from_items(refs, ("[doc: str]", BoundID[Document]))
+```
+
+A single reference that every call should receive goes in a scalar array:
+
+```python
+params = SamplingParams(temperature=0.2, max_tokens=1000)
+sampling = Array.scalar(
+    await client.store(SamplingParamsEntity(params=params)), BoundID[SamplingParamsEntity]
+)
 ```
 
 Two shorthands cover the step side. A step annotated to **receive** an entity, as in
-`config: ModelConfig`, gets the loaded object rather than the reference. A step annotated to
+`document: Document`, gets the loaded object rather than the reference. A step annotated to
 **return** an entity type, as in `-> Answer`, may return the entity itself: fxtr stores it and
 records the reference as the step's result, so the mapped results of such a step form an array of
 `BoundID[Answer]` without any explicit store calls.
@@ -185,8 +241,9 @@ and referenced by ID. The rule of thumb:
   workflow, without needing an identity of its own. "A collection of an X and a Y", dataset rows,
   sweep coordinates, numbers extracted for aggregation, summary statistics.
 * Use an **entity** when you want to refer to the thing by ID and point at it from elsewhere, when
-  it is naturally a single thing rather than a collection of values (a transcript, a verdict, a
-  configuration, a report), or when its shape is irregular.
+  it is naturally a single thing rather than a collection of values (a transcript, a document, a
+  verdict, a report), or when its shape is irregular, such as a tagged dataclass a step takes as
+  input.
 
 The practical differences follow from that:
 
