@@ -223,7 +223,8 @@ draws follows this guide: its own colors, fonts, tooltips, and fixed sizes do no
 
 * **Links.** Anything that stands for an entity leads to it. In text and tables, write an
   `EntityLink` (a chip the viewer draws: pressing opens the entity, hovering shows its preview).
-  The viewer labels the chip with the entity's type and a short ID, so put a readable name
+  The viewer labels the chip with the type's `EntityInlineLink` renderer, or with the entity's type
+  and a short ID when it has none. A label of that second kind names little, so put a readable name
   beside it (a row's guest, a model's name), as the viewer's own tables put a key beside a value.
   A chart's mark cannot be a chip, so a mark standing for an entity takes
   `const links = useEntityLinks()` from `fxtr-view`: pressing it calls `links.open(id)`, which

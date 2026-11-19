@@ -108,11 +108,12 @@ Size:         pilot 2 models x 3 topics x 1 sample  =  6 jokes,  6 judge calls
 
 Each part of a design becomes a piece of fxtr code:
 
-* **Entities**: Data records that represent objects in your program, such as configuration
-  objects, measurement results, or a report that collects the final results. Each entity
-  type has a unique type ID, which fxtr uses to visualize it.
-* **Steps**: The functions that do the work. For our joke evaluation: `tell_joke` asks one model for one joke,
-  `grade_joke` grades one joke, and `summarize` averages one model's grades.
+* **Entities**: Data records that represent objects in your program, such as a conversation,
+  a judge's answer, or a report that collects the final results. Each entity type has a unique
+  type ID, which fxtr uses to visualize it.
+* **Steps**: The functions that do the work. For our joke evaluation: `tell_joke` asks one model
+  for one joke, `grade_joke` has a judge grade one joke, and `summarize` averages one model's
+  grades.
 * **Arrays** hold many values indexed by named **dimensions**, including the variables you are comparing and those you are sweeping over. Each step is *mapped* over some of them to run computations in parallel. For instance, in the joke evaluation, `model`,
   `topic`, and `sample` are dimensions, and fxtr calls `tell_joke` once per model, topic, and
   sample.
@@ -130,12 +131,13 @@ Create a project and install its dependencies. The commands below use the name
 uvx fxtr new ~/fxtr/joke-eval
 cd ~/fxtr/joke-eval
 uv sync
-uv add "behaviors[models]"
+uv add "behaviors[models]" jsonschema
 (cd views && pnpm install)
 ```
 
 `fxtr new` writes an empty project and makes it a git repository.
-[behaviors](../../behaviors/references/index.mdx) is our library for calling language models in fxtr, which your steps can use.
+[behaviors](../../behaviors/references/index.mdx) is our library for calling language models in fxtr, which your steps can
+use. Its judge checks each answer with `jsonschema`.
 
 Next, connect the project to your database:
 
@@ -182,71 +184,44 @@ what they mean.
 ### Define the entities
 
 An entity is a frozen dataclass that fxtr can store and show in the viewer. Each gets a type name
-of its own. You'll usually want:
+of its own.
 
-* a **configuration** for each kind of model call, holding every setting that affects its output,
-  so the results always point at the exact settings that produced them;
-* a **measurement** entity, such as a grade or a verdict, with the judge's rationale and its full
-  reply;
-* a **report** that references everything the experiment produced, so the launcher, and later a
-  results view, can find it all from one place.
+You can also use existing entities from `behaviors`, such as `ChatRollout` for a conversation and
+`Judgment` for a judge's answer.
 
-You can also use existing entities like `ChatRollout` from `behaviors`.
-
-Here's an example configuration entity for how to generate a joke from a topic:
+Here's the entity that holds a model's sampling settings, so a step can take them as an input:
 
 ```python
 @dataclass(frozen=True)
-class GenerationConfig(DataclassEntity, fxtr_type="local.joke_eval.GenerationConfig.v1"):
-    """A model asked for jokes, and the prompt it is asked with."""
+class SamplingParamsEntity(DataclassEntity, fxtr_type="local.joke_eval.SamplingParamsEntity.v1"):
+    """Sampling settings, stored so a step can take them as an input. An array can hold a
+    reference to an entity, but not a `SamplingParams` itself."""
 
-    provider: Provider
-    model_name: str
-    sampling: SamplingParams
-    prompt_template: str  # formatted with {topic}
+    params: SamplingParams
 ```
 
-You can expand below to see the other types we'll need:
+You'll also want a **report** that references the experiment's results, so the launcher, and
+later a results view, can find them all from one place. Expand below to see it, and
+the summary of each model it refers to:
 
-<Accordion title="The other entity types">
+<Accordion title="The other types">
   ```python
-  @dataclass(frozen=True)
-  class JudgeConfig(DataclassEntity, fxtr_type="local.joke_eval.JudgeConfig.v1"):
-      """A judge model and the rubric it grades jokes with."""
-
-      provider: Provider
-      model_name: str
-      sampling: SamplingParams
-      rubric: str  # formatted with {topic} and {joke}
-
-
-  @dataclass(frozen=True)
-  class JokeGrade(DataclassEntity, fxtr_type="local.joke_eval.JokeGrade.v1"):
-      """The judge's grade of one joke."""
-
-      topic: str
-      joke: str
-      score: int | None  # 1 to 10; None when there was no joke or the reply had no valid score
-      rationale: str
-      judge_reply: str
-
-
   class ModelSummary(TypedDict):
       """How one model's jokes were graded. A TypedDict isn't an entity: it's stored inline, as a
       value in an array."""
 
       jokes: int
       graded: int
-      mean_score: float | None
+      mean_score: float | None  # None when no joke was graded
 
 
   @dataclass(frozen=True)
   class JokeReport(DataclassEntity, fxtr_type="local.joke_eval.JokeReport.v1"):
-      """Everything the evaluation produced. Each field references a stored array; the comments
-      give each array's dimensions."""
+      """The evaluation's results: the jokes, their judgments, and each model's summary. Each field
+      references a stored array; the comments give each array's dimensions."""
 
       jokes: BoundID[Array[BoundID[ChatRollout]]]  # [model, topic, sample]
-      grades: BoundID[Array[BoundID[JokeGrade]]]  # [model, topic, sample]
+      judgments: BoundID[Array[BoundID[Judgment]]]  # [model, topic, sample]
       summary: BoundID[Array[ModelSummary]]  # [model]
   ```
 </Accordion>
@@ -260,30 +235,36 @@ A step is an async function decorated with `@step`. fxtr stores each call's resu
 **cache**, and reuses it when the same call comes up again. Write one step per call you'd make by
 hand: one conversation, one judgment, one summary. fxtr handles running them many times.
 
-For our joke evaluation, we can use three steps:
+For our joke evaluation, we can use four steps:
 
-* `tell_joke(config, topic)` formats the prompt and holds a one-turn conversation with
-  `run_chat_rollout`. It returns the `ChatRollout`, a behaviors entity holding the whole
-  conversation.
-* `grade_joke(judge, topic, rollout)` takes the joke's text from the rollout, sends the rubric to
-  the judge, and reads the `<score>` and `<rationale>` tags from its reply. A missing joke or an
-  unreadable score is recorded as a grade with no score. A failed model call raises, so that
-  fxtr retries it when you resume the job.
-* `summarize(grades)` receives one model's grades, as an array over `topic` and `sample`, and
-  averages their scores.
+* `tell_joke(model_name, sampling, prompt_template, topic)` formats the prompt and holds a
+  one-turn conversation with `run_chat_rollout`. It returns the `ChatRollout`.
+* `transcript(rollout)` turns the conversation into a `Transcript`, which fxtr stores, so the
+  judgment can refer to it and the viewer can show it beside the judgment. A conversation that
+  didn't complete raises, which stops the job there.
+* `grade_joke(model_name, sampling, instructions, rubric, output_schema, transcript)` has a judge
+  grade the joke with behaviors' `judge`, and returns its `Judgment`.
+* `summarize(judgments)` receives one model's judgments, as an array over `topic` and `sample`,
+  and averages their scores.
 
 Here's the step that generates a joke:
 
 <Accordion title="The tell_joke step">
   ```python
   @step(name="joke_eval.tell_joke")
-  async def tell_joke(context: StepContext, config: GenerationConfig, topic: str) -> ChatRollout:
+  async def tell_joke(
+      context: StepContext,
+      model_name: str,
+      sampling: SamplingParamsEntity,
+      prompt_template: str,
+      topic: str,
+  ) -> ChatRollout:
       """Ask a model for a joke about the topic."""
-      prompt = config.prompt_template.format(topic=topic)
-      api = make_api(config.provider, config.model_name)
+      prompt = prompt_template.format(topic=topic)
+      api = make_api(model_name)
       try:
           # The model to talk to, which retries rate limits and server errors.
-          model = chat_session_model_from_api(api, config.sampling, retry=RetryConfig())
+          model = chat_session_model_from_api(api, sampling.params, retry=RetryConfig())
           # The user's side of the conversation: one scripted message.
           user = ScriptedUserSimulator(messages=(UserMessage(content=(ContentText(text=prompt),)),))
           policy = context_policy_from_user_simulator(user, initialization=None)
@@ -296,8 +277,57 @@ Here's the step that generates a joke:
   ```
 </Accordion>
 
-The behaviors guide [Calling language models](../../behaviors/references/guides/language-models.mdx) explains some
-common conversation and judge patterns.
+The judge step calls `judge`, which fills in a template with the judge's instructions, the
+transcript, the rubric and the output schema. It checks the answer against the schema, and sends
+it back with what was wrong until it fits. The output schema here asks for a `discussion` of the
+joke first, then a `score` from 1 to 10, so the judge explains its reasoning before it scores:
+
+<Accordion title="The grade_joke step">
+  ```python
+  # The messages the judge is sent. `judge` fills in each {placeholder}: the judge's instructions,
+  # the transcript and the rubric under their names, and the output schema it must answer in.
+  JUDGE_TEMPLATE = (
+      SystemMessage(content=(ContentText(text="{instructions}"),)),
+      UserMessage(content=(ContentText(text="{transcript}\n\n{rubric}\n\n{output_schema}"),)),
+  )
+
+
+  @step(name="joke_eval.grade_joke")
+  async def grade_joke(
+      context: StepContext,
+      model_name: str,
+      sampling: SamplingParamsEntity,
+      instructions: TextEntity,
+      rubric: TextEntity,
+      output_schema: TextEntity,
+      transcript: Transcript,
+  ) -> Judgment:
+      """Grade the joke in the transcript, from 1 to 10."""
+      api = make_api(model_name)
+      try:
+          # `judge` sends the template filled in, checks the answer against the output schema, and
+          # asks again when it doesn't fit. A Judgment records the answer, the entities the judge
+          # was given, and every request and response.
+          judgment = await judge(
+              api,
+              context_template=JUDGE_TEMPLATE,
+              entities={"instructions": instructions, "rubric": rubric, "transcript": transcript},
+              entity_to_prompt_text=DEFAULT_ENTITY_TO_PROMPT_TEXT,
+              output_schema=cast(JSONObject, json.loads(output_schema.text)),
+              sampling=sampling.params,
+          )
+      finally:
+          with anyio.CancelScope(shield=True):
+              await api.aclose()
+      # Log lines show on the step's card in the viewer.
+      context.log(f"score: {None if judgment.output is None else judgment.output['score']}")
+      return judgment
+  ```
+</Accordion>
+
+The behaviors guide [Calling language models](../../behaviors/references/guides/language-models.mdx) explains more
+conversation and judge patterns, and the [API overview](../../behaviors/references/reference/api.mdx#judging) covers
+`judge`'s options.
 
 ### Connect them in a workflow
 
@@ -311,11 +341,17 @@ Our joke evaluation can be defined using the following workflow:
 @workflow(name="joke_eval.evaluate")
 async def evaluate(
     context: WorkflowContext,
-    # The inputs the launcher supplies, with their dimensions: a configuration per model, the
-    # topics, and one judge configuration with no dimensions.
-    models: Annotated[ArrayHandle[BoundID[GenerationConfig]], "[model: str]"],
+    # The inputs the launcher supplies, with their dimensions. Each model is a name and the
+    # `[model]` dimension; everything else has no dimensions, so every call gets the same one.
+    model_name: Annotated[ArrayHandle[str], "[model: str]"],
+    sampling: ScalarHandle[BoundID[SamplingParamsEntity]],
+    prompt_template: ScalarHandle[str],
     topics: Annotated[ArrayHandle[str], "[topic: str]"],
-    judge: ScalarHandle[BoundID[JudgeConfig]],
+    judge_model_name: ScalarHandle[str],
+    judge_sampling: ScalarHandle[BoundID[SamplingParamsEntity]],
+    judge_instructions: ScalarHandle[BoundID[TextEntity]],
+    rubric: ScalarHandle[BoundID[TextEntity]],
+    output_schema: ScalarHandle[BoundID[TextEntity]],
     samples: int,
 ) -> JokeReport:
     """Have each model write jokes about each topic, grade them, and summarize each model."""
@@ -324,33 +360,49 @@ async def evaluate(
     jokes = context.run_step(
         "tell_jokes",
         tell_joke,
-        {"config": models, "topic": topics},
+        {
+            "model_name": model_name,
+            "sampling": sampling,
+            "prompt_template": prompt_template,
+            "topic": topics,
+        },
         map_over=["model", "topic"],
         replicas={"sample": range(samples)},
     )
-    # One call per joke. The judge goes to every call, and each call gets its joke's topic.
-    grades = context.run_step(
+    # One call per joke: its conversation as a transcript.
+    transcripts = context.run_step(
+        "transcripts", transcript, {"rollout": jokes}, map_over=["model", "topic", "sample"]
+    )
+    # One call per joke. The judge's settings go to every call, and each call gets its transcript.
+    judgments = context.run_step(
         "grade_jokes",
         grade_joke,
-        {"judge": judge, "topic": topics, "rollout": jokes},
+        {
+            "model_name": judge_model_name,
+            "sampling": judge_sampling,
+            "instructions": judge_instructions,
+            "rubric": rubric,
+            "output_schema": output_schema,
+            "transcript": transcripts,
+        },
         map_over=["model", "topic", "sample"],
     )
-    # One call per model, which receives that model's grades over [topic, sample].
-    summary = context.run_step("summarize", summarize, {"grades": grades}, map_over=["model"])
+    # One call per model, which receives that model's judgments over [topic, sample].
+    summary = context.run_step("summarize", summarize, {"judgments": judgments}, map_over=["model"])
     # Wait for the results (`observe`), store each array, and return a report that references
     # them.
     return JokeReport(
         jokes=await context.store(await jokes.observe()),
-        grades=await context.store(await grades.observe()),
+        judgments=await context.store(await judgments.observe()),
         summary=await context.store(await summary.observe()),
     )
 ```
 
 * `tell_jokes` is mapped over `model` and `topic`, and `replicas` adds a `sample` dimension, so
   its result is an array of rollouts indexed by `[model, topic, sample]`.
-* `grade_jokes` is mapped over all three. The judge, which has no dimensions, goes to every call,
-  and each call gets the topic matching its joke.
-* `summarize` is mapped over `model` only, so each call receives one model's grades over the
+* `transcripts` and `grade_jokes` are mapped over all three. The judge's settings, which have no
+  dimensions, go to every call, and each call gets the transcript of its joke.
+* `summarize` is mapped over `model` only, so each call receives one model's judgments over the
   remaining dimensions, `[topic, sample]`.
 
 [Arrays and parallel computations](concepts/arrays-and-parallel-computations.mdx) explains
@@ -371,9 +423,9 @@ experiment module. Here's what it looks like for the joke evaluation:
   the workflow when it resumes a job or shows one in the viewer.
   """
 
-  import re
+  import json
   from dataclasses import dataclass
-  from typing import Annotated, Literal, TypedDict
+  from typing import Annotated, TypedDict, cast
 
   import anyio
 
@@ -381,54 +433,30 @@ experiment module. Here's what it looks like for the joke evaluation:
       ScriptedUserSimulator,
       context_policy_from_user_simulator,
   )
-  from behaviors.implementations.models import (
-      DEFAULT_FAILURE_CATEGORIES_TO_RETRY,
-      chat_session_model_from_api,
-      generate_with_retries,
-  )
+  from behaviors.implementations.models import chat_session_model_from_api
   from behaviors.implementations.models.anthropic import AnthropicMessagesAPI
   from behaviors.implementations.models.openai_responses import OpenAIResponsesAPI
-  from behaviors.rollouts.chat import run_chat_rollout
+  from behaviors.judging.defaults import DEFAULT_ENTITY_TO_PROMPT_TEXT
+  from behaviors.judging.judge import Judgment, judge
+  from behaviors.rollouts.chat import ChatRolloutTranscriptProjection, run_chat_rollout
   from behaviors.types import (
-      AssistantMessage,
-      ChatMessage,
       ChatRollout,
       ContentText,
-      ModelCallFailure,
-      ModelRequest,
       RetryConfig,
       RolloutCompleted,
       SamplingParams,
+      SystemMessage,
+      TextEntity,
+      Transcript,
       UserMessage,
   )
+  from behaviors.types.json import JSONObject
   from fxtr.core.entities import BoundID
   from fxtr.entity_defns.array import Array
   from fxtr.entity_defns.dataclass_entity import DataclassEntity
   from fxtr.experiment.handles import ArrayHandle, ScalarHandle
   from fxtr.experiment.steps import StepContext, step
   from fxtr.experiment.workflows import WorkflowContext, workflow
-
-  Provider = Literal["anthropic", "openai"]
-
-
-  def make_api(provider: Provider, model_name: str) -> AnthropicMessagesAPI | OpenAIResponsesAPI:
-      """A client for the provider's API. Both steps build their clients here, so a test can
-      replace this one function with a fake model."""
-      if provider == "anthropic":
-          return AnthropicMessagesAPI(model_name)
-      return OpenAIResponsesAPI(model_name)
-
-
-  def answer_text(messages: tuple[ChatMessage, ...]) -> str:
-      """The assistant's text, without reasoning or tool-use blocks."""
-      return "".join(
-          block.text
-          for message in messages
-          if isinstance(message, AssistantMessage)
-          for block in message.content
-          if isinstance(block, ContentText)
-      )
-
 
   # --- Entities ------------------------------------------------------------------------------------
   #
@@ -438,34 +466,11 @@ experiment module. Here's what it looks like for the joke evaluation:
 
 
   @dataclass(frozen=True)
-  class GenerationConfig(DataclassEntity, fxtr_type="local.joke_eval.GenerationConfig.v1"):
-      """A model asked for jokes, and the prompt it is asked with."""
+  class SamplingParamsEntity(DataclassEntity, fxtr_type="local.joke_eval.SamplingParamsEntity.v1"):
+      """Sampling settings, stored so a step can take them as an input. An array can hold a
+      reference to an entity, but not a `SamplingParams` itself."""
 
-      provider: Provider
-      model_name: str
-      sampling: SamplingParams
-      prompt_template: str  # formatted with {topic}
-
-
-  @dataclass(frozen=True)
-  class JudgeConfig(DataclassEntity, fxtr_type="local.joke_eval.JudgeConfig.v1"):
-      """A judge model and the rubric it grades jokes with."""
-
-      provider: Provider
-      model_name: str
-      sampling: SamplingParams
-      rubric: str  # formatted with {topic} and {joke}
-
-
-  @dataclass(frozen=True)
-  class JokeGrade(DataclassEntity, fxtr_type="local.joke_eval.JokeGrade.v1"):
-      """The judge's grade of one joke."""
-
-      topic: str
-      joke: str
-      score: int | None  # 1 to 10; None when there was no joke or the reply had no valid score
-      rationale: str
-      judge_reply: str
+      params: SamplingParams
 
 
   class ModelSummary(TypedDict):
@@ -474,35 +479,63 @@ experiment module. Here's what it looks like for the joke evaluation:
 
       jokes: int
       graded: int
-      mean_score: float | None
+      mean_score: float | None  # None when no joke was graded
 
 
   @dataclass(frozen=True)
   class JokeReport(DataclassEntity, fxtr_type="local.joke_eval.JokeReport.v1"):
-      """Everything the evaluation produced. Each field references a stored array; the comments
-      give each array's dimensions."""
+      """The evaluation's results: the jokes, their judgments, and each model's summary. Each field
+      references a stored array; the comments give each array's dimensions."""
 
       jokes: BoundID[Array[BoundID[ChatRollout]]]  # [model, topic, sample]
-      grades: BoundID[Array[BoundID[JokeGrade]]]  # [model, topic, sample]
+      judgments: BoundID[Array[BoundID[Judgment]]]  # [model, topic, sample]
       summary: BoundID[Array[ModelSummary]]  # [model]
+
+
+  # --- Model calls ---------------------------------------------------------------------------------
+
+
+  def make_api(model_name: str) -> AnthropicMessagesAPI | OpenAIResponsesAPI:
+      """A client for a model named `anthropic/MODEL` or `openai/MODEL`. Both steps build their
+      clients here, so a test can replace this one function with a fake model."""
+      provider, _, model_id = model_name.partition("/")
+      if provider == "anthropic":
+          return AnthropicMessagesAPI(model_id)
+      if provider == "openai":
+          return OpenAIResponsesAPI(model_id)
+      raise ValueError(f"Name a model as anthropic/MODEL or openai/MODEL, not {model_name!r}")
+
+
+  # The messages the judge is sent. `judge` fills in each {placeholder}: the judge's instructions,
+  # the transcript and the rubric under their names, and the output schema it must answer in.
+  JUDGE_TEMPLATE = (
+      SystemMessage(content=(ContentText(text="{instructions}"),)),
+      UserMessage(content=(ContentText(text="{transcript}\n\n{rubric}\n\n{output_schema}"),)),
+  )
 
 
   # --- Steps ---------------------------------------------------------------------------------------
   #
   # A step is an async function that does one unit of work. `@step` registers it under a name. fxtr
   # caches each call's result, and reuses it when the same step is called with the same inputs.
-  # An argument annotated with an entity type, such as `config: GenerationConfig`, receives the
+  # An argument annotated with an entity type, such as `sampling: SamplingParamsEntity`, receives the
   # loaded entity; the `context` gives access to fxtr, such as storing and loading entities.
 
 
   @step(name="joke_eval.tell_joke")
-  async def tell_joke(context: StepContext, config: GenerationConfig, topic: str) -> ChatRollout:
+  async def tell_joke(
+      context: StepContext,
+      model_name: str,
+      sampling: SamplingParamsEntity,
+      prompt_template: str,
+      topic: str,
+  ) -> ChatRollout:
       """Ask a model for a joke about the topic."""
-      prompt = config.prompt_template.format(topic=topic)
-      api = make_api(config.provider, config.model_name)
+      prompt = prompt_template.format(topic=topic)
+      api = make_api(model_name)
       try:
           # The model to talk to, which retries rate limits and server errors.
-          model = chat_session_model_from_api(api, config.sampling, retry=RetryConfig())
+          model = chat_session_model_from_api(api, sampling.params, retry=RetryConfig())
           # The user's side of the conversation: one scripted message.
           user = ScriptedUserSimulator(messages=(UserMessage(content=(ContentText(text=prompt),)),))
           policy = context_policy_from_user_simulator(user, initialization=None)
@@ -514,77 +547,64 @@ experiment module. Here's what it looks like for the joke evaluation:
               await api.aclose()
 
 
+  @step(name="joke_eval.transcript")
+  async def transcript(context: StepContext, rollout: ChatRollout) -> Transcript:
+      """The conversation as a transcript, the form a judge reads."""
+      if not isinstance(rollout.status, RolloutCompleted):
+          # Raise rather than return: there is no joke to grade, and the job stops here so you can
+          # see why the conversation didn't complete.
+          raise ValueError(f"the conversation did not complete: {rollout.status.kind}")
+      return await ChatRolloutTranscriptProjection().to_transcript(rollout)
+
+
   @step(name="joke_eval.grade_joke")
   async def grade_joke(
-      context: StepContext, judge: JudgeConfig, topic: str, rollout: ChatRollout
-  ) -> JokeGrade:
-      """Grade a joke from 1 to 10."""
-      joke = ""
-      if isinstance(rollout.status, RolloutCompleted) and rollout.model_turns:
-          joke = answer_text(rollout.model_turns[-1].messages).strip()
-      if not joke:
-          # Return, rather than raise, for outcomes that a retry would reproduce: the result is
-          # cached as a grade with no score.
-          return JokeGrade(
-              topic=topic, joke="", score=None, rationale="",
-              judge_reply=f"not graded: no joke ({rollout.status.kind})",
-          )
-
-      # A judge needs no conversation, so it makes a single request.
-      request = ModelRequest(
-          context=(UserMessage(content=(ContentText(text=judge.rubric.format(topic=topic, joke=joke)),)),),
-          tools=(),
-          tool_choice=None,
-          parallel_tool_calls=None,
-          sampling=judge.sampling,
-      )
-      api = make_api(judge.provider, judge.model_name)
+      context: StepContext,
+      model_name: str,
+      sampling: SamplingParamsEntity,
+      instructions: TextEntity,
+      rubric: TextEntity,
+      output_schema: TextEntity,
+      transcript: Transcript,
+  ) -> Judgment:
+      """Grade the joke in the transcript, from 1 to 10."""
+      api = make_api(model_name)
       try:
-          response = await generate_with_retries(
+          # `judge` sends the template filled in, checks the answer against the output schema, and
+          # asks again when it doesn't fit. A Judgment records the answer, the entities the judge
+          # was given, and every request and response.
+          judgment = await judge(
               api,
-              request,
-              retry=RetryConfig(),
-              failure_categories_to_retry=DEFAULT_FAILURE_CATEGORIES_TO_RETRY,
+              context_template=JUDGE_TEMPLATE,
+              entities={"instructions": instructions, "rubric": rubric, "transcript": transcript},
+              entity_to_prompt_text=DEFAULT_ENTITY_TO_PROMPT_TEXT,
+              output_schema=cast(JSONObject, json.loads(output_schema.text)),
+              sampling=sampling.params,
           )
       finally:
           with anyio.CancelScope(shield=True):
               await api.aclose()
-      if isinstance(response, ModelCallFailure):
-          # Raise rather than return: a returned failure would be cached as the result, while a
-          # raised one makes the job stop, and resuming it calls the judge again.
-          raise RuntimeError(f"judge call failed ({response.category}): {response.description}")
-
-      # Read the score and rationale from the reply's XML tags.
-      reply = answer_text(response.output)
-      score_match = re.search(r"<score>\s*(\d+)\s*</score>", reply)
-      score = int(score_match.group(1)) if score_match else None
-      rationale_match = re.search(r"<rationale>(.*?)</rationale>", reply, re.DOTALL)
       # Log lines show on the step's card in the viewer.
-      context.log(f"{score}: {joke}")
-      return JokeGrade(
-          topic=topic,
-          joke=joke,
-          score=score if score is not None and 1 <= score <= 10 else None,
-          rationale=rationale_match.group(1).strip() if rationale_match else "",
-          judge_reply=reply,
-      )
+      context.log(f"score: {None if judgment.output is None else judgment.output['score']}")
+      return judgment
 
 
   @step(name="joke_eval.summarize")
   async def summarize(
       context: StepContext,
-      # An array, and the dimensions each call receives: all of one model's grades. Its values are
-      # references to the grades, which the step loads itself.
-      grades: Annotated[Array[BoundID[JokeGrade]], "[topic: str, sample: int]"],
+      # An array, and the dimensions each call receives: all of one model's judgments. Its values
+      # are references to the judgments, which the step loads itself.
+      judgments: Annotated[Array[BoundID[Judgment]], "[topic: str, sample: int]"],
   ) -> ModelSummary:
       """Average one model's scores."""
-      scores = []
-      for ref in grades.values():
-          grade = await context.load(ref)
-          if grade.score is not None:
-              scores.append(grade.score)
+      scores: list[float] = []
+      for ref in judgments.values():
+          judgment = await context.load(ref)
+          # A judgment's output is None when the judge never gave an answer that fit the schema.
+          if judgment.output is not None:
+              scores.append(float(cast(float, judgment.output["score"])))
       return ModelSummary(
-          jokes=len(grades),
+          jokes=len(judgments),
           graded=len(scores),
           mean_score=sum(scores) / len(scores) if scores else None,
       )
@@ -600,11 +620,17 @@ experiment module. Here's what it looks like for the joke evaluation:
   @workflow(name="joke_eval.evaluate")
   async def evaluate(
       context: WorkflowContext,
-      # The inputs the launcher supplies, with their dimensions: a configuration per model, the
-      # topics, and one judge configuration with no dimensions.
-      models: Annotated[ArrayHandle[BoundID[GenerationConfig]], "[model: str]"],
+      # The inputs the launcher supplies, with their dimensions. Each model is a name and the
+      # `[model]` dimension; everything else has no dimensions, so every call gets the same one.
+      model_name: Annotated[ArrayHandle[str], "[model: str]"],
+      sampling: ScalarHandle[BoundID[SamplingParamsEntity]],
+      prompt_template: ScalarHandle[str],
       topics: Annotated[ArrayHandle[str], "[topic: str]"],
-      judge: ScalarHandle[BoundID[JudgeConfig]],
+      judge_model_name: ScalarHandle[str],
+      judge_sampling: ScalarHandle[BoundID[SamplingParamsEntity]],
+      judge_instructions: ScalarHandle[BoundID[TextEntity]],
+      rubric: ScalarHandle[BoundID[TextEntity]],
+      output_schema: ScalarHandle[BoundID[TextEntity]],
       samples: int,
   ) -> JokeReport:
       """Have each model write jokes about each topic, grade them, and summarize each model."""
@@ -613,24 +639,40 @@ experiment module. Here's what it looks like for the joke evaluation:
       jokes = context.run_step(
           "tell_jokes",
           tell_joke,
-          {"config": models, "topic": topics},
+          {
+              "model_name": model_name,
+              "sampling": sampling,
+              "prompt_template": prompt_template,
+              "topic": topics,
+          },
           map_over=["model", "topic"],
           replicas={"sample": range(samples)},
       )
-      # One call per joke. The judge goes to every call, and each call gets its joke's topic.
-      grades = context.run_step(
+      # One call per joke: its conversation as a transcript.
+      transcripts = context.run_step(
+          "transcripts", transcript, {"rollout": jokes}, map_over=["model", "topic", "sample"]
+      )
+      # One call per joke. The judge's settings go to every call, and each call gets its transcript.
+      judgments = context.run_step(
           "grade_jokes",
           grade_joke,
-          {"judge": judge, "topic": topics, "rollout": jokes},
+          {
+              "model_name": judge_model_name,
+              "sampling": judge_sampling,
+              "instructions": judge_instructions,
+              "rubric": rubric,
+              "output_schema": output_schema,
+              "transcript": transcripts,
+          },
           map_over=["model", "topic", "sample"],
       )
-      # One call per model, which receives that model's grades over [topic, sample].
-      summary = context.run_step("summarize", summarize, {"grades": grades}, map_over=["model"])
+      # One call per model, which receives that model's judgments over [topic, sample].
+      summary = context.run_step("summarize", summarize, {"judgments": judgments}, map_over=["model"])
       # Wait for the results (`observe`), store each array, and return a report that references
       # them.
       return JokeReport(
           jokes=await context.store(await jokes.observe()),
-          grades=await context.store(await grades.observe()),
+          judgments=await context.store(await judgments.observe()),
           summary=await context.store(await summary.observe()),
       )
   ```
@@ -651,42 +693,44 @@ This is usually a good place to specify global configuration arguments or inputs
 run your experiment over.
 
 The simplest possible launcher is just a `main` script which connects to fxtr, stores the
-configurations, builds the workflow's inputs, and runs it. This one asks one model for one joke
-about one topic:
+entities the workflow takes, builds the workflow's inputs, and runs it. This one asks one model
+for one joke about one topic:
 
 ```python launch.py
+import json
+
 import anyio
 
-from behaviors.types import SamplingParams
+from behaviors.judging.defaults import DEFAULT_SYSTEM_INSTRUCTIONS_ENTITY
+from behaviors.judging.schemas import continuous_schema
+from behaviors.types import SamplingParams, TextEntity
 from fxtr.core.entities import BoundID
 from fxtr.entity_defns.array import Array
 from fxtr.project.running import open_local_client, run_job
-from joke_eval.experiment import GenerationConfig, JudgeConfig, evaluate
+from joke_eval.experiment import SamplingParamsEntity, evaluate
 
 
 async def main() -> None:
     async with open_local_client(__file__) as client:
-        # Store the configurations, getting back references to them.
-        haiku = await client.store(GenerationConfig(
-            provider="anthropic",
-            model_name="claude-haiku-4-5-20251001",
-            sampling=SamplingParams(max_tokens=1000),
-            prompt_template='Write one original joke about "{topic}". Reply with the joke only.',
-        ))
-        judge = await client.store(JudgeConfig(
-            provider="anthropic",
-            model_name="claude-opus-5-5",
-            sampling=SamplingParams(max_tokens=1000),
-            rubric=(
-                'Rate this joke about "{topic}" from 1 to 10.\n<joke>\n{joke}\n</joke>\n'
-                "Explain your rating, then give it as <rationale>...</rationale><score>N</score>."
-            ),
-        ))
+        # Store the entities the workflow takes, getting back references to them.
+        sampling = await client.store(SamplingParamsEntity(params=SamplingParams(max_tokens=1000)))
+        instructions = await client.store(DEFAULT_SYSTEM_INSTRUCTIONS_ENTITY)
+        rubric = await client.store(TextEntity(text="Rate how funny the joke is, from 1 to 10."))
+        schema = continuous_schema(score_description="How funny it is.", minimum=1, maximum=10)
+        output_schema = await client.store(TextEntity(text=json.dumps(schema)))
         # Build the workflow's inputs, as arrays with named dimensions, and run it as a job.
         inputs = {
-            "models": Array.from_items([(("haiku-4.5",), haiku)], ("[model: str]", BoundID[GenerationConfig])),
+            "model_name": Array.from_items(
+                [(("haiku-4.5",), "anthropic/claude-haiku-4-5-20251001")], ("[model: str]", str)
+            ),
+            "sampling": Array.scalar(sampling, BoundID[SamplingParamsEntity]),
+            "prompt_template": Array.scalar('Write one joke about "{topic}". Just the joke.', str),
             "topics": Array.from_items([(("coffee",), "coffee")], ("[topic: str]", str)),
-            "judge": Array.scalar(judge, BoundID[JudgeConfig]),
+            "judge_model_name": Array.scalar("anthropic/claude-opus-5-5", str),
+            "judge_sampling": Array.scalar(sampling, BoundID[SamplingParamsEntity]),
+            "judge_instructions": Array.scalar(instructions, BoundID[TextEntity]),
+            "rubric": Array.scalar(rubric, BoundID[TextEntity]),
+            "output_schema": Array.scalar(output_schema, BoundID[TextEntity]),
             "samples": Array.scalar(1, int),
         }
         await run_job(client, evaluate, inputs, root="jokes-minimal")
@@ -704,17 +748,20 @@ for the joke evaluation:
   ```python launch.py
   """Launch the joke evaluation: `uv run python launch.py pilot` or `uv run python launch.py full`."""
 
+  import json
   import sys
   from typing import Any
 
   import anyio
 
-  from behaviors.types import SamplingParams
+  from behaviors.judging.defaults import DEFAULT_SYSTEM_INSTRUCTIONS_ENTITY
+  from behaviors.judging.schemas import continuous_schema
+  from behaviors.types import SamplingParams, TextEntity
   from fxtr.core.entities import BoundID, FxtrEntityStorage
   from fxtr.entity_defns.array import Array
   from fxtr.project.client import JobNotFinishedError, ProjectClient
   from fxtr.project.running import open_local_client, run_job
-  from joke_eval.experiment import GenerationConfig, JokeReport, JudgeConfig, Provider, evaluate
+  from joke_eval.experiment import JokeReport, SamplingParamsEntity, evaluate
 
   # The name of this run. Every cached result's address starts with it, so launching again under the
   # same root reuses earlier results, and a new root starts fresh.
@@ -723,16 +770,27 @@ for the joke evaluation:
   # How many topics (from the start of TOPICS) and samples per model and topic each size uses.
   SIZES = {"pilot": (3, 1), "full": (10, 3)}
 
-  # Each model's short name (its key in the `model` dimension), provider, and model ID.
-  MODELS: dict[str, tuple[Provider, str]] = {
-      "haiku-4.5": ("anthropic", "claude-haiku-4-5-20251001"),
-      "sonnet-5.5": ("anthropic", "claude-sonnet-5-5"),
+  # Each model's short name (its key in the `model` dimension), and its provider and model ID.
+  MODELS = {
+      "haiku-4.5": "anthropic/claude-haiku-4-5-20251001",
+      "sonnet-5.5": "anthropic/claude-sonnet-5-5",
   }
-  JUDGE: tuple[Provider, str] = ("anthropic", "claude-opus-5-5")
+  JUDGE = "anthropic/claude-opus-5-5"
+
+  # The sampling settings of every model call, the jokes' and the judge's.
+  SAMPLING = SamplingParams(max_tokens=1000)
 
   TOPICS = [
-      "coffee", "dentist", "printer", "penguin", "Monday",
-      "airport", "houseplant", "spreadsheet", "cat", "elevator",
+      "coffee",
+      "dentist",
+      "printer",
+      "penguin",
+      "Monday",
+      "airport",
+      "houseplant",
+      "spreadsheet",
+      "cat",
+      "elevator",
   ]
 
   JOKE_PROMPT = (
@@ -741,50 +799,45 @@ for the joke evaluation:
   )
 
   RUBRIC = """\
-  You are judging a joke about "{topic}". Rate how funny it is, from 1 (not funny at all) to 10 \
-  (a joke a professional comedian would be proud of). A typical competent joke is around 5. \
-  Score a well-known joke, or a stock format with the topic swapped in, low.
+  Rate how funny the assistant's joke about the user's topic is, from 1 (not funny at all) to 10 (a
+  joke a professional comedian would be proud of). A typical competent joke is around 5. Score a
+  well-known joke, or a stock format with the topic swapped in, low. If the assistant gave no joke,
+  score 1."""
 
-  <joke>
-  {joke}
-  </joke>
-
-  First explain your rating in two or three sentences, then give the score, in this form:
-  <rationale>...</rationale>
-  <score>N</score>"""
+  # The shape of the judge's answer: a `discussion` of its reasons first, then a `score`.
+  OUTPUT_SCHEMA = continuous_schema(
+      score_description="How funny the joke is, from 1 to 10.", minimum=1, maximum=10
+  )
 
 
   async def build_inputs(client: ProjectClient, size: str) -> dict[str, Array[Any]]:
       """The workflow's inputs, as arrays keyed by the names of its arguments."""
       topic_count, samples = SIZES[size]
 
-      # Store a configuration entity per model. `client.store` returns a reference (a BoundID) to
-      # the stored entity, which is what the workflow takes.
-      models = []
-      for name, (provider, model_name) in MODELS.items():
-          config = GenerationConfig(
-              provider=provider,
-              model_name=model_name,
-              sampling=SamplingParams(max_tokens=1000),
-              prompt_template=JOKE_PROMPT,
-          )
-          models.append(((name,), await client.store(config)))
-      provider, model_name = JUDGE
-      judge = JudgeConfig(
-          provider=provider,
-          model_name=model_name,
-          sampling=SamplingParams(max_tokens=1000),
-          rubric=RUBRIC,
-      )
+      # `client.store` stores an entity and returns a reference to it (a BoundID). The jokes and the
+      # judge share one sampling entity.
+      sampling = await client.store(SamplingParamsEntity(params=SAMPLING))
 
       # `Array.from_items` builds an array from (key, value) pairs, given its dimensions and value
       # type; `Array.scalar` builds one with no dimensions.
       return {
-          "models": Array.from_items(models, ("[model: str]", BoundID[GenerationConfig])),
+          "model_name": Array.from_items(
+              [((name,), model_name) for name, model_name in MODELS.items()], ("[model: str]", str)
+          ),
+          "sampling": Array.scalar(sampling, BoundID[SamplingParamsEntity]),
+          "prompt_template": Array.scalar(JOKE_PROMPT, str),
           "topics": Array.from_items(
               [((topic,), topic) for topic in TOPICS[:topic_count]], ("[topic: str]", str)
           ),
-          "judge": Array.scalar(await client.store(judge), BoundID[JudgeConfig]),
+          "judge_model_name": Array.scalar(JUDGE, str),
+          "judge_sampling": Array.scalar(sampling, BoundID[SamplingParamsEntity]),
+          "judge_instructions": Array.scalar(
+              await client.store(DEFAULT_SYSTEM_INSTRUCTIONS_ENTITY), BoundID[TextEntity]
+          ),
+          "rubric": Array.scalar(await client.store(TextEntity(text=RUBRIC)), BoundID[TextEntity]),
+          "output_schema": Array.scalar(
+              await client.store(TextEntity(text=json.dumps(OUTPUT_SCHEMA))), BoundID[TextEntity]
+          ),
           "samples": Array.scalar(samples, int),
       }
 
@@ -869,13 +922,13 @@ uv run python launch.py pilot
 ```
 
 ```text
-job 06bb0ae8-f73c-4995-acf3-2ab0b299b259: running
-watch it at http://127.0.0.1:8000/#job=06bb0ae8-f73c-4995-acf3-2ab0b299b259
+job 36b84ead-fcbc-435d-96b3-b94f47d37a6a: running
+watch it at http://127.0.0.1:8000/#job=36b84ead-fcbc-435d-96b3-b94f47d37a6a
 sent it to the viewer's open tab
-job 06bb0ae8-f73c-4995-acf3-2ab0b299b259: succeeded
-  result: bafyreicl5xf4h3itncd34nnehfpoae6hnqpcumrty7o4ffjpirgidfaray
-haiku-4.5: mean score 2.67 (3 of 3 jokes graded)
-sonnet-5.5: mean score 3.67 (3 of 3 jokes graded)
+job 36b84ead-fcbc-435d-96b3-b94f47d37a6a: succeeded
+  result: bafyreifrqrpsm354vsfawbhc7jlqa3mwqmscs7epjmve2u3idtrvddctnu
+haiku-4.5: mean score 2.00 (3 of 3 jokes graded)
+sonnet-5.5: mean score 3.83 (3 of 3 jokes graded)
 ```
 
 The launcher prints the job's ID and a link, and the viewer switches to the job. It shows the
@@ -885,7 +938,8 @@ Try clicking through the results:
 
 * Open the card of the step that generates conversations (`tell_jokes`) to see its result array.
   Each value links to a conversation.
-* Open a measurement from the judge step (`grade_jokes`) to read the judge's rationale.
+* Open a judgment from the judge step (`grade_jokes`) to read the judge's discussion and score,
+  beside the transcript it judged.
 * Open the result of the summary step (`summarize`) to see the result per condition.
 
 You can use the viewer to read a few conversations and their measurements, and figure out if there is anything that you want to change in the experiment before you scale it up.
@@ -906,7 +960,7 @@ uv run python launch.py full
 ```
 
 It reuses all of the pilot's results and computes only the new ones: in the example, the other 54
-jokes and 54 grades. Then it stops:
+jokes, their transcripts and their judgments. Then it stops:
 
 ```text
 job 4c713924-2fc5-4d9c-a55d-0ae1bdca398f: stopped
@@ -942,14 +996,14 @@ sonnet-5.5: mean score 3.57 (30 of 30 jokes graded)
 
 ### Add a condition
 
-Next, you can add a condition as a new key of the dimension you compare. In the example, add Opus 5.5 to
-`MODELS` in `launch.py`:
+Next, you can add a condition as a new key of the dimension you compare. In the example, add
+Opus 5.5 to `MODELS` in `launch.py`:
 
 ```python
-MODELS: dict[str, tuple[Provider, str]] = {
-    "haiku-4.5": ("anthropic", "claude-haiku-4-5-20251001"),
-    "sonnet-5.5": ("anthropic", "claude-sonnet-5-5"),
-    "opus-5.5": ("anthropic", "claude-opus-5-5"),
+MODELS = {
+    "haiku-4.5": "anthropic/claude-haiku-4-5-20251001",
+    "sonnet-5.5": "anthropic/claude-sonnet-5-5",
+    "opus-5.5": "anthropic/claude-opus-5-5",
 }
 ```
 
@@ -1001,7 +1055,8 @@ how views work.
 You've built, run, and changed your first experiment. From here, you could:
 
 * Refine the rubric, or add a second judge to see whether the judges agree (in the example,
-  whether Opus favors its own jokes).
+  whether Opus favors its own jokes). Give the judge's model name and sampling a `[judge]`
+  dimension of their own, and map the judge step over it too.
 * Study a follow-up question about something you noticed in the conversations.
 * Start an experiment on another question, by hand or with the `first-experiment` skill.
 
