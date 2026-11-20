@@ -137,14 +137,10 @@ before [adding one](references/reference/renderers.mdx#adding-a-package-to-a-pro
   the viewer's URL (the one `fxtr view` printed, also saved in `.fxtr/viewer.json` within the project), then `#` and `&`-separated parts.
 
   ```
-  http://127.0.0.1:8000/#job=<job id>&w=flowchart(/outer,model=sonnet)&slice=(prompt=3)&card=judge&p=table(/outer/judge,model=sonnet)&p=.output.transcript
+  http://127.0.0.1:8000/#job=<job id>&p=table(/outer/judge,model=sonnet)&p=.output.transcript
   ```
 
-  `job` is the job's ID (left out, the newest job). `w` is the workflow invocation shown (left
-  out, the root's trace): `trace`, `flowchart`, or the id of an `InvocationPanel` renderer
-  of that workflow, applied to its step path from the root, with the keys of the mapped workflows
-  on the way. `slice` picks dim values for every card and panel. `card` names a step of that workflow (or
-  `return`, what it returned) whose card to scroll to. Each `p` opens a panel, in order,
+  `job` is the job's ID (left out, the newest job). Each `p` opens a panel, in order,
   each following the one before it; `pin` opens one that stays as it is. A panel is an address,
   a view applied to a location and params: the view is `table`, `invocation`, `tree`, `code`, a
   renderer's or page's id, or nothing for the default; the location is a step path from the root
@@ -157,6 +153,22 @@ before [adding one](references/reference/renderers.mdx#adding-a-package-to-a-pro
   what the call returned. After the first
   panel, a location may be relative to the panel before it: `.field…` below it, `../step` a
   sibling. Percent-encode only spaces, `%`, `&`, `#`, `+`, and quotes.
+
+  A panel on a step is enough to show where the step is: the link opens on the trace of the
+  workflow that step is in, scrolled to its card, so bind the keys of the mapped workflows on the
+  way (`model=sonnet` above) in the panel or the slice. Three more parts say otherwise:
+
+  ```
+  http://127.0.0.1:8000/#job=<job id>&w=flowchart(/outer,model=sonnet)&slice=(prompt=3)&card=judge
+  ```
+
+  `w` is the workflow invocation shown: `trace`, `flowchart`, or the id of an `InvocationPanel`
+  renderer of that workflow, applied to its step path from the root, with the keys of the mapped
+  workflows on the way. Left out, it is the trace of the workflow the first panel's step is in,
+  or the root's when no panel shows a step. `card` names a step of the workflow shown (or
+  `return`, what it returned) whose card to scroll to, which points at a step without opening a
+  panel; left out, it is the first panel's step. `slice` picks dim values for every card and
+  panel.
 
 ### Reading the documentation
 

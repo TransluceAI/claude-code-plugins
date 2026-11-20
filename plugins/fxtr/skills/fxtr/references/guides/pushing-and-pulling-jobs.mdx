@@ -183,8 +183,7 @@ While it works, a push reports each stage on standard error: exporting the job, 
 commits, uploading (with how much is sent, for a large record), and on a hub, waiting for the hub
 to take it in. `-q` hides these lines. When it finishes, it prints the job's tags, what the remote calls the push (on a hub the job's record CID, on
 an OCI registry the digest of the artifact it made), and the command that pulls it. A hub push
-also prints the job's visibility when the hub reports it, and the address of the job's page, to
-open or to send to whoever should read it. A pull names what to get: on a hub a
+also prints the address of the job's page, to open or to send to whoever should read it. A pull names what to get: on a hub a
 job, by its id or a tag; on an OCI registry an artifact, by tag or digest. In the other project:
 
 ```bash
@@ -215,32 +214,47 @@ git repository. GitHub does not show these refs among the repository's branches 
 
 A fxtr hub keeps a team's published jobs, lists them, and shows each in the experiment viewer in
 the browser, with the project's own renderers. A hub project belongs to a GitHub repository, and
-takes jobs from any directory of it. Access comes from GitHub: the repository's collaborators
-have a role on each of its hub projects, and those who can write to it can publish. The account
-that created a project is its admin while it can read the repository, so it can publish there
-too.
+takes jobs from any directory of it.
 
 **Accounts.** Sign in to the hub with GitHub, or make an account with your email address and a
-password. An email account reads public jobs at once; to use your repositories, confirm your
-address from the email the hub sends, then link your GitHub account from Account settings.
+password. An email account reads public projects at once. Confirm your address from the email
+the hub sends: you then have access to each project that is shared with your address, and you
+can link your GitHub account from Account settings to use your repositories.
 Besides `remote add --create`, the hub's Connect a project page creates a project: pick a
 repository you can read, and the hub finds the fxtr projects in it.
 
-**Who reads a job.** Each published job has a visibility:
+**Who reads a project.** Each project has a visibility, which covers every job in it.
 
-| Visibility | Who can read the job                                                                                         |
-| ---------- | ------------------------------------------------------------------------------------------------------------ |
-| `shared`   | Everyone with a role on the project: the repository's collaborators, and the project's creator. The default. |
-| `private`  | Only you, the job's first publisher, while you have a role on the project.                                   |
-| `public`   | Anyone, signed in or not. They see the project's name and repository, and none of its other jobs.            |
+| Visibility | Who can read the project and its jobs                               |
+| ---------- | ------------------------------------------------------------------- |
+| `private`  | Only people who have been given access to the project. The default. |
+| `public`   | Anyone, signed in or not.                                           |
+
+Publishing always needs a role, also on a public project. A project admin changes the
+visibility on the project's Sharing page on the hub (`/projects/<id>/sharing`), or with
+`fxtr hub visibility`.
+
+**Who has a role.** A role says what a person may do on a project: a reader reads it, a
+contributor also publishes jobs and creates tags, a maintainer also moves tags, and an admin
+also changes the project's visibility and who it is shared with. By default, roles come from
+GitHub. A collaborator of the project's repository has their permission there as their role
+(read or triage: reader; write: contributor; maintain: maintainer; admin: admin). The account
+that created a project is its admin while it can read the repository.
+
+A project admin can also share the project with a person directly, on the project's Sharing
+page: enter the person's email address or GitHub username, and choose a role. The person does
+not need access to the repository. A role given this way replaces the person's GitHub
+permission on that project, so it can be higher or lower. When an admin removes it, and the
+project is shared with the person in no other way, the person has their GitHub permission again. A project shared with an email address gives its role to the hub account
+that confirmed that address; the person can make the account after the project is shared.
 
 The hub holds each job once. A push sends the job's record, and the hub merges it into its copy
 of the job, so the job's page on the hub keeps its address as the job grows; a push prints the
 hub's *record CID* after it, the content id of the record the hub now exports of the job.
 Tags are names on the hub that point at jobs. A pull names the job by its id, and gets it as
 the hub holds it; a tag gets the job it points at (`tag:TAG` when the tag
-looks like a job id). The job's id can carry the repository, as `OWNER/REPO/JOB`, in a push, a
-pull, or a visibility change: it is checked against the checkout's repository, which guards
+looks like a job id). The job's id can carry the repository, as `OWNER/REPO/JOB`, in a push or a
+pull: it is checked against the checkout's repository, which guards
 against a job id pasted into the wrong checkout. Pushing a job again after resuming it brings
 the hub's copy up to date, and the hub refuses it if someone else pushed the job since; pull the
 job with `--update`, then push again (the same rule `fxtr jobs import --update` follows). If two
@@ -265,13 +279,8 @@ built bundle leaves the job's renderers on the hub as they are.
 uv run fxtr push JOB --tag baseline
 uv run fxtr pull JOB                   # the job as the hub holds it
 uv run fxtr pull baseline              # by tag
-uv run fxtr push JOB --visibility private   # set who can read the job
-uv run fxtr hub visibility JOB public       # change it without pushing
+uv run fxtr hub visibility public      # let anyone read the remote's project and its jobs
 ```
-
-You can set any visibility on a job you first published. A project admin can make a job they
-can read `shared` or `public`, but cannot make someone else's job `private`. A tag never names a
-job that the person setting it cannot read.
 
 **Renderers.** [Some browser features are not available to renderers on a hub](../reference/renderers.mdx#what-renderers-can-do-on-a-hub).
 The hub shows a job with the renderers its push attached: the project's built

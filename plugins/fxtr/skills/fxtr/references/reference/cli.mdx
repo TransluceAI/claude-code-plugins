@@ -179,9 +179,7 @@ See [Pushing and pulling jobs](../guides/pushing-and-pulling-jobs.mdx) for how r
     tags you give; moving a tag that names another job needs the maintainer role. A push also
     sends how the job's attempts went (their errors and logs) and the project's built view
     bundle, and prints the id of the record the hub now exports of the job and the address of
-    the job's page. `--visibility
-    private|shared|public` sets who can read the job. Without it, a job's first push makes it
-    `shared`, and a later push keeps the job's level.
+    the job's page. Who can read the job is the project's visibility (`fxtr hub visibility`).
 </ResponseField>
 
 <ResponseField name="fxtr pull REF">
@@ -204,8 +202,8 @@ See [Pushing and pulling jobs](../guides/pushing-and-pulling-jobs.mdx) for how r
   to an access token made on the hub's account page (Computers and tokens).
 </ResponseField>
 
-<ResponseField name="fxtr hub visibility JOB LEVEL">
-  Set who can read a published job on the hub: `private` (only its first publisher), `shared`
-  (everyone with a role on the project), or `public` (anyone). Takes `--remote` like
-  `fxtr push`.
+<ResponseField name="fxtr hub visibility LEVEL">
+  Set who can read a hub remote's project and every job in it: `private` (only people who have
+  been given access) or `public` (anyone, signed in or not). You must be an admin of the project.
+  Takes `--remote` like `fxtr push`.
 </ResponseField>

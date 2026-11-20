@@ -2,10 +2,10 @@
   "skill": "first-experiment",
   "documentation": null,
   "packages": {
-    "fxtr": "0.2.0a0",
-    "behaviors": "0.0.1a5"
+    "fxtr": "0.2.0a1",
+    "behaviors": "0.0.1a6"
   },
-  "revision": "6432f6ad1682ca0a8ff344a6ef66cb09bbccb8f7",
+  "revision": "ffd2e4fd4515a3102de1a6bc4915d75831822eea",
   "modified": false,
   "content_sha256": "a940ab9c02eec8a663fd3ef94d622a4dc88c9a42b4d5f7faa777c4c90b3e340a"
 }
