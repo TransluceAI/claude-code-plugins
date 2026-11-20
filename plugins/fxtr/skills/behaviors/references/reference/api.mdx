@@ -350,6 +350,7 @@ async def judge_run(
             ),
             sampling=sampling.params,
             custom_formats=[AGENT_RUN_LINE_CITATION_FORMAT],
+            preview=context.preview,
         )
     finally:
         await api.aclose()
@@ -408,6 +409,19 @@ The arguments:
   written once.
 * **`sampling`** is the sampling parameters for each call, and **`callback`**, if given,
   receives the events of each call when the model API can stream.
+* **`preview`**, if given, receives the judgment so far, so you can watch it in the viewer while
+  its step runs. In a step, pass `preview=context.preview`. It receives a function that builds a
+  partial `Judgment` (see [Partial values](../../../fxtr/references/concepts/entities-and-custom-types.mdx#partial-values)),
+  so the value is built only when the viewer's copy is saved. In it, `entity_ids` is set, and
+  `output` and `citations` are `None`. `attempts` holds a partial `JudgeAttempt` for each finished
+  attempt, with its `response` and `invalid_output_reasons`, then one for the attempt in flight,
+  whose `response` is a partial `ModelResponse` holding the answer so far (`None` before the
+  answer starts). Each attempt's `request` is `None`: every request repeats the entities, so the
+  preview leaves them out, and the judgment `judge` returns keeps them. With the behaviors
+  renderers (`behaviorsRenderers` from `fxtr-view-behaviors`) registered, the step's panel shows
+  the judge's answers so far, each invalid one with what was wrong, ending in the answer being
+  written, and its row in the run's table says which attempt it is on ("attempt 2 · 1 invalid ·
+  streaming…"). When `judge` returns, the step's result takes the preview's place.
 * **`max_answers`** is how many answers the model gets, 3 by default. An answer that is not
   accepted goes back to the model with what was wrong, until it has given this many.
 * **`retry`** and **`failure_categories_to_retry`** say when a failed call is made again. By
@@ -417,7 +431,7 @@ The arguments:
   failed calls, the two multiply: pass `retry=RetryConfig(max_attempts=1)` to make each call
   once.
 
-All of these but `callback` change what a judgment can come out as. In a step, pass the ones you
+All of these but `callback` and `preview` change what a judgment can come out as. In a step, pass the ones you
 vary as step inputs, so the judgment points at the settings that produced it and the step cache
 sees each one: `sampling` in a sampling entity of the project's own, as the example does, and
 `max_answers` as a number. A setting kept in the step's code, such as `retry`, is invisible to the
