@@ -227,8 +227,10 @@ wire = codec.encode_request(model_id, adapted.request, streaming=True)
 print(wire.path, wire.query, wire.body)
 ```
 
-The adapters always stream, even from `generate`, so `streaming=True` renders what they send:
-here `/v1beta/models/{model_id}:streamGenerateContent` with the query `alt=sse`.
+The adapters stream by default, even from `generate`, so `streaming=True` renders what they
+send: here `/v1beta/models/{model_id}:streamGenerateContent` with the query `alt=sse`. (An
+adapter built with `stream_in_generate=False` sends what `streaming=False` renders from
+`generate`; see [Adapter options](../reference/api.mdx#adapter-options).)
 
 The adapter adds what it has learned from the model's rejections on top, so a live call can
 report a change this preview doesn't.

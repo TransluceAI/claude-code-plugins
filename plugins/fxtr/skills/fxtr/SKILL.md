@@ -1,6 +1,6 @@
 ---
 name: fxtr
-description: Set up, write, run, and view fxtr experiments, including new projects (`fxtr new`), steps and workflows, sweeps over models, prompts, or datasets, reductions, querying arrays (filter, aggregate, join, SQL), input datasets, reports, launching and resuming jobs, cached step results and reruns, and viewer renderers, results overviews, and the charts and visualizations in them. Use whenever starting or working in a fxtr project, creating or changing an experiment, or when a run reused results it should have recomputed (or recomputed results it should have reused).
+description: Set up, write, run, and view fxtr experiments, including new projects (`fxtr new`), steps and workflows, sweeps over models, prompts, or datasets, reductions, querying arrays (filter, aggregate, join, SQL), input datasets, reports, launching and resuming jobs, cached step results and reruns, and viewer renderers, results overviews, and the charts and visualizations in them. Use whenever starting or working in a fxtr project, creating or changing an experiment, when a run reused results it should have recomputed (or recomputed results it should have reused), or to answer questions about a job's results, such as finding interesting runs and reading transcripts, judgments, errors, and logs, and citing them with viewer links.
 ---
 
 # fxtr
@@ -63,6 +63,7 @@ Running and viewing jobs before the first launch.
 | Choose how many steps run at once, or speed up a job whose steps call APIs                             | [Choose how many steps run at once](references/guides/running-and-viewing-jobs.mdx#choose-how-many-steps-run-at-once) |
 | Set up a remote, push a job to a fxtr hub or an OCI registry, or pull one                              | [Pushing and pulling jobs](references/guides/pushing-and-pulling-jobs.mdx)                                            |
 | Reuse or recompute cached results, resolve cache conflicts, change a step's logic                      | [Managing the step cache](references/concepts/managing-the-step-cache.mdx)                                            |
+| Answer questions about a job's data, or cite it to the user                                            | [Asking an agent about a job](references/guides/asking-an-agent-about-a-job.mdx)                                      |
 | Look up a command's options                                                                            | [CLI reference](references/reference/cli.mdx)                                                                         |
 
 ## Best practices
@@ -114,6 +115,28 @@ before [adding one](references/reference/renderers.mdx#adding-a-package-to-a-pro
 * **Give the root workflow a results overview**: an `InvocationPanel` that reads the workflow's
   report and presents the experiment's findings
   ([Results overviews](references/concepts/visualization-and-custom-renderers.mdx#results-overviews)).
+* **Show hover content with `HoverCard`.** To show more about an element that is not a chart's
+  mark (a chip in text, a cell of a table), wrap the element in `HoverCard` from `fxtr-view-kit`.
+  Don't draw your own card with `position: absolute`: each pane is a scroll box, and the pane cuts
+  off a card that extends past its edges. `HoverCard` draws the card above every pane.
+* **Open details in a pane beside the view.** When the reader presses an element that points at
+  another entity, or at a part of one (a citation, a row's transcript, an event of a game), open
+  the entity beside the view with `EntityLink`, or with `useEntityLinks().open(id, params)` when the
+  view draws the element itself. Name the part with a selector param, which the entity's view
+  declares and reads
+  ([Params of an entity's views](references/reference/renderers.mdx#params-of-an-entitys-views)).
+  Don't scroll to a copy of the entity embedded further down the view.
+* **Ship a citation format with its renderer.** When you define a format, translate each saved
+  `address_in_entity` into parameters the cited entity's renderer uses to show the evidence.
+  The hub loads the compatible renderer bundle attached to the job's push. The local viewer
+  uses the project's current bundle, so check saved citations when rebuilding for older jobs.
+  [Params of an entity's views](references/reference/renderers.mdx#params-of-an-entitys-views)
+* **Scroll to a selected part with `scrollIntoPane`.** In a view that reads a selector, get the
+  part's element from a ref and call `scrollIntoPane` from `fxtr-view-kit` in an effect, returning
+  its result. Don't call `scrollIntoView`, which also moves the viewer's panes sideways, and don't
+  find the element by a document id, because the page can show two views of one entity.
+  `HoverCard` and `scrollIntoPane` each explain themselves in their module comments, in
+  `views/node_modules/fxtr-view-kit/src/`.
 * **Check a view without opening it.** After changing a view, confirm it builds and run the
   searches in [Check it](references/guides/designing-views.mdx#check-it), then tell the
   user it is ready to look at in their viewer. Don't open the viewer in a browser yourself, or set
@@ -133,42 +156,89 @@ before [adding one](references/reference/renderers.mdx#adding-a-package-to-a-pro
   their sources change, and the open viewer switches to them in place, so never ask the user to
   reload or restart it.
 * **Link the user to what you are pointing at.** The viewer's URL holds the job, the level shown,
-  the slice, and the open panels, so instead of describing where to click, give the user a link:
-  the viewer's URL (the one `fxtr view` printed, also saved in `.fxtr/viewer.json` within the project), then `#` and `&`-separated parts.
+  the slice, and the open panels, so instead of describing where to click, give the user a link.
+  Make it with the fxtr MCP tools' `make_viewer_link`. Without them, write it as
+  [The viewer's URL](references/guides/asking-an-agent-about-a-job.mdx#the-viewers-url)
+  says, and tell the user you wrote it by hand. When such a link passes params to an entity's
+  view, link the entity by its cid: an older viewer does not pass params to an entity at a
+  step's field path.
 
-  ```
-  http://127.0.0.1:8000/#job=<job id>&p=table(/outer/judge,model=sonnet)&p=.output.transcript
-  ```
+### Answering questions about a job
 
-  `job` is the job's ID (left out, the newest job). Each `p` opens a panel, in order,
-  each following the one before it; `pin` opens one that stays as it is. A panel is an address,
-  a view applied to a location and params: the view is `table`, `invocation`, `tree`, `code`, a
-  renderer's or page's id, or nothing for the default; the location is a step path from the root
-  (`/outer/judge`), or `cid:<cid>` for an entity, then a field path (`.output.transcript`,
-  `.inputs.prompt`, `[2]` for a list item); params bind dims and the params a view declares, by
-  name, as bare values (`3`, `sonnet`) or JSON (`"two words"`, `{"message":2}`). The `invocation`
-  view shows one call: its status line, then its inputs, a workflow's runs, and its output; with
-  `section_order=output_first` the output comes right under the status line instead
-  (`section_order=inputs_first` is the default). Link output first when the user wants to read
-  what the call returned. After the first
-  panel, a location may be relative to the panel before it: `.field…` below it, `../step` a
-  sibling. Percent-encode only spaces, `%`, `&`, `#`, `+`, and quotes.
+Read a job's data with the fxtr MCP tools (`list_steps`, `read_step_output`, `read_invocation`,
+`read_entity`), as [Asking an agent about a job](references/guides/asking-an-agent-about-a-job.mdx) describes. Don't read the viewer's
+GraphQL API: it is not a supported interface.
 
-  A panel on a step is enough to show where the step is: the link opens on the trace of the
-  workflow that step is in, scrolled to its card, so bind the keys of the mapped workflows on the
-  way (`model=sonnet` above) in the panel or the slice. Three more parts say otherwise:
+* **Add the tools when they are missing.** If you have no fxtr MCP tools in an fxtr project, ask
+  the user whether to add them. On a yes, run `uv run fxtr mcp add` in the project (in Codex,
+  `uv run fxtr mcp add --codex`). The command writes or updates `.mcp.json`, which the user can
+  commit so teammates get the tools too. Then tell the user to start a new session, which has the
+  tools, and to approve the `fxtr` server when Claude Code asks. Until then, answer from
+  `fxtr jobs` and the files you can read.
+  * The tools load only in a session started in the project. If your session started elsewhere,
+    find the project from the user's request (a path, a job id, or a viewer URL), offer
+    `fxtr mcp add` there, and tell the user to start the next session in the project.
+  * If `fxtr mcp add` fails with no `mcp` command, the project's fxtr is too old for the tools.
+    Tell the user, and write links by hand as "Link the user to what you are pointing at" says.
 
-  ```
-  http://127.0.0.1:8000/#job=<job id>&w=flowchart(/outer,model=sonnet)&slice=(prompt=3)&card=judge
-  ```
+* **Start from what the experiment's author wrote.** Read `EXPERIMENT.md` and use
+  `read_step_output` with `step_path="/"` to read the root workflow's report, when available.
+  For a particular step invocation, give its path, such as `/outer/judge`, and dimension keys,
+  such as `{"model": "sonnet", "prompt": 3}`.
 
-  `w` is the workflow invocation shown: `trace`, `flowchart`, or the id of an `InvocationPanel`
-  renderer of that workflow, applied to its step path from the root, with the keys of the mapped
-  workflows on the way. Left out, it is the trace of the workflow the first panel's step is in,
-  or the root's when no panel shows a step. `card` names a step of the workflow shown (or
-  `return`, what it returned) whose card to scroll to, which points at a step without opening a
-  panel; left out, it is the first panel's step. `slice` picks dim values for every card and
-  panel.
+* **Name a job by its full id, from `list_jobs`.** The tools take only a whole UUID
+  (`801488ae-7ed8-4af6-8904-1133deba0201`). `EXPERIMENT.md`, reports, and the viewer often cite a
+  short id (`801488ae`), and the job a document cites may be in another database, such as its
+  author's. Find the full id with `list_jobs` first. If no job matches, tell the user which jobs
+  the project has.
+
+* **Read code at the job's commit,** with `read_step_code` or `git show <commit>:<path>`, not the
+  working tree, which may have changed since the job ran.
+
+* **Read a transcript before you say what a model did in it.** Say which claims are a judge's and
+  which you checked.
+
+* **For a question across many rows, count with a script** over the rows you read, and say how
+  you counted.
+
+* **To show the interesting parts of one transcript or a few,** read each with
+  `read_entity(as_prompt_text=True, job=...)`, pick the parts, and link each part's lines.
+
+* **To find interesting runs, or interesting parts of transcripts, across a job,** write a judge
+  step with behaviors' `judge` and its line citations (the [behaviors skill](../behaviors/SKILL.md)),
+  add it to the workflow, and launch the workflow again: the step cache reuses the results of the
+  steps that did not change. Then rank the judge's scores and show the user the highest and the
+  lowest, citing the judge's lines. Ask before you launch: a judge sweep calls a model for every
+  row, so say how many calls it makes.
+
+* **Cite each claim about the data,** at the finest granularity that supports it: a line rather
+  than a message, a message rather than a transcript, an invocation rather than a step.
+  * When the user asks to see, show, or find something in a job, answer with links: one for
+    each place you point at.
+  * Make every link with `make_viewer_link`. Write one by hand only when you have no tools, as
+    "Link the user to what you are pointing at" says.
+  * A view's own params go in the panel's `params`. To find a project view's params, read
+    where its renderer declares them in `views/src` (`declareView(..., { params: [...] })`), and
+    read the renderer for each param's shape. Never guess a param's name: a view ignores a param
+    it does not declare.
+  * A view gets the panel's params only when the panel shows the entity: by its cid, or at a
+    step's field path that holds a reference to the entity. At a field path that holds anything
+    else, the viewer shows the value as data and ignores the params, and `make_viewer_link`
+    notes it. Then link the entity that takes them instead.
+  * Pass `job` to `read_entity` to get the entity's link with what you read.
+  * Put each link on the claim's own words, never on "here", and give a short exact quote next to
+    it, so the user can check the claim without clicking.
+  * Reuse a judge's stored citation as it is: its entity and its `address_in_entity`. If the
+    viewer can't open a citation's address at its place, link the entity and write the address in
+    the link's text. Never drop a citation for that reason.
+  * For a custom citation format, use the registered entry point's name as `citation_format` in
+    `make_viewer_link`. To expose a new format to MCP, give the format a `viewer_params` function
+    and register the format in `fxtr.citation_formats`.
+    [Custom formats](../behaviors/references/reference/api.mdx#judging)
+
+* **Give links. Open the viewer only when the user asks to see something,** with
+  `open_in_viewer`. The tool shows the linked workflow in the center and pins any requested panels
+  beside the user's panels. With no page open, the tool opens a new tab.
 
 ### Reading the documentation
 

@@ -11,30 +11,29 @@ fxtr steps.
 
 ## Choose a layer
 
-| Need                                                     | API                                                                                                                                                        |
-| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| One model request, no conversation state                 | `ModelAPI.generate(ModelRequest)`, from `behaviors.interfaces.model_apis`; returns a `ModelResponse` or a `ModelCallFailure`.                              |
-| Incremental output from a request                        | `StreamingModelAPI.generate_with_events(request, callback)`.                                                                                               |
-| Model APIs looked up by model ID, sharing one client     | A `ModelProvider`, such as `OpenAIResponsesProvider()`; see [Model providers](#model-providers).                                                           |
-| What a request would send a provider, without sending it | A dialect codec's `adapt_request` and `encode_request`; see [Codecs](../guides/dialects-and-adaptation.mdx#codecs).                                        |
-| One request with a retry schedule                        | `generate_with_retries(api, request, retry=..., failure_categories_to_retry=...)`, from `behaviors.implementations.models`.                                |
-| A conversation with accumulated messages                 | `chat_session_model_from_api(api, sampling, retry=...)`, from `behaviors.implementations.models`, which creates an independent session per conversation.   |
-| A model against an environment or a simulated user       | `run_chat_rollout(model, context_policy, ...)`, from `behaviors.rollouts.chat`; returns a `ChatRollout`.                                                   |
-| Fixed user prompts                                       | `ScriptedUserSimulator(messages=(...))`, made a policy with `context_policy_from_user_simulator(..., initialization=...)`.                                 |
-| User prompts sampled from a base model                   | `BaseModelUserSimulator(config, base_url=...)`, from `behaviors.implementations.context_policies.base_model_user_simulator`.                               |
-| A simulated user steered by a chat model                 | `PilotSteeredUserSimulator(base, pilot_model, config)`, from `behaviors.implementations.context_policies.pilot_steered_user_simulator`.                    |
-| User prompts interleaved with tool calls                 | `context_policy_from_user_and_tools(user, tools, initialization=...)`.                                                                                     |
-| A first turn followed only by tool turns                 | `context_policy_from_tool_policy(tools, first_turn_messages=..., initialization=...)`.                                                                     |
-| A custom or adaptive conversation                        | `context_policy_from_generator`, or a subclass of `GeneratorContextPolicy`; for checkpoints, implement the `ContextPolicy` and session protocols directly. |
-| Plain transcripts for viewers or readers                 | `ChatRolloutTranscriptProjection`, from `behaviors.rollouts.chat`, with `Transcript`, `TranscriptGroup`, and `AgentRun`.                                   |
-| A model's assessment of evidence against a rubric        | `judge(model_api, context_template=..., entities=..., ...)`, from `behaviors.judging.judge`; returns a `Judgment`. See [Judging](#judging).                |
-| Docent readings                                          | `DocentReadingStep` and the conversions in `behaviors.implementations.docent`, with `behaviors[docent]`.                                                   |
+| Need                                                     | API                                                                                                                                                                                                                             |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| One model request, no conversation state                 | `ModelAPI.generate(ModelRequest)`, from `behaviors.interfaces.model_apis`; returns a `ModelResponse` or a `ModelCallFailure`.                                                                                                   |
+| Incremental output from a request                        | `StreamingModelAPI.generate_with_events(request, callback)`.                                                                                                                                                                    |
+| Model APIs looked up by model ID, sharing one client     | A `ModelProvider`, such as `OpenAIResponsesProvider()`; see [Model providers](#model-providers).                                                                                                                                |
+| What a request would send a provider, without sending it | A dialect codec's `adapt_request` and `encode_request`; see [Codecs](../guides/dialects-and-adaptation.mdx#codecs).                                                                                                             |
+| One request with a retry schedule                        | `generate_with_retries(api, request, retry=..., failure_categories_to_retry=...)`, from `behaviors.implementations.models`.                                                                                                     |
+| A conversation with accumulated messages                 | `chat_session_model_from_api(api, sampling, retry=...)`, from `behaviors.implementations.models`, which creates an independent session per conversation.                                                                        |
+| A model against an environment or a simulated user       | `run_chat_rollout(model, context_policy, ...)`, from `behaviors.rollouts.chat`; returns a `ChatRollout`.                                                                                                                        |
+| Fixed user prompts                                       | `ScriptedUserSimulator(messages=(...))`, made a policy with `context_policy_from_user_simulator(..., initialization=...)`.                                                                                                      |
+| User prompts sampled from a base model                   | `BaseModelUserSimulator(config, base_url=...)`, from `behaviors.implementations.context_policies.base_model_user_simulator`.                                                                                                    |
+| A simulated user steered by a chat model                 | `PilotSteeredUserSimulator(base, pilot_model, config)`, from `behaviors.implementations.context_policies.pilot_steered_user_simulator`.                                                                                         |
+| User prompts interleaved with tool calls                 | `context_policy_from_user_and_tools(user, tools, initialization=...)`.                                                                                                                                                          |
+| A first turn followed only by tool turns                 | `context_policy_from_tool_policy(tools, first_turn_messages=..., initialization=...)`.                                                                                                                                          |
+| A custom or adaptive conversation                        | `context_policy_from_generator`, or a subclass of `GeneratorContextPolicy`; for checkpoints, implement the `ContextPolicy` and session protocols directly.                                                                      |
+| Plain transcripts for viewers or readers                 | `ChatRolloutTranscriptProjection`, from `behaviors.rollouts.chat`, with `Transcript`, `TranscriptGroup`, and `AgentRun`.                                                                                                        |
+| A model's assessment of evidence against a rubric        | `judge(model_api, context_template=..., entities=..., ...)`, from `behaviors.judging.judge`; returns a `Judgment`. See [Judging](#judging).                                                                                     |
+| Records in Docent's data models                          | `to_docent_transcript`, `to_docent_agent_run`, and `to_docent_message`, from `behaviors.implementations.docent`, with `behaviors[docent]`. See [Converting to Docent](../guides/conversation-records.mdx#converting-to-docent). |
 
 The guides cover the layers above the request:
 [policies and tools](../guides/policies-and-tools.mdx),
-[rollout outcomes and retries](../guides/rollout-outcomes.mdx),
-[conversation records and checkpoints](../guides/conversation-records.mdx), and
-[Docent readings](../guides/docent-readings.mdx). Users simulated by a base model, and
+[rollout outcomes and retries](../guides/rollout-outcomes.mdx), and
+[conversation records and checkpoints](../guides/conversation-records.mdx). Users simulated by a base model, and
 steered by a pilot model, are in
 [Simulated users](../guides/policies-and-tools.mdx#simulated-users). The general judge is
 described under [Judging](#judging), and the
@@ -154,7 +153,20 @@ service expects for the output limit.
 reasoning state OpenRouter returns for models that sign or encrypt their reasoning, which it
 sends back on later turns. It takes `extra_body`, where OpenRouter's routing options go (such as
 `provider`), `forward_cache_control`, and `max_tokens_param`. `GeminiGenerateContentAPI` takes
-no options beyond its credentials.
+no options beyond its credentials and `stream_in_generate`.
+
+Every adapter takes `stream_in_generate`, which sets whether `generate` receives the response as
+a stream. It is `True` by default. With `False`, `generate` sends one plain request and receives
+the whole response at once. A streamed call uses several times as much CPU, because each token
+arrives in its own network read, so `False` lets one process make more short calls each second,
+as in a large judge job. But a plain request waits for the whole response under the client's
+read timeout, 10 minutes by default, so a call that generates for longer than that fails. Use
+`False` only for calls that you know are short. `generate_with_events` always streams. Each
+adapter's provider takes the same option and gives it to each API it builds. The adapter sets
+the request's `stream` field itself, so a `stream` in `SamplingParams.extra` or `extra_body` is
+an error. With `False`, `OpenAIResponsesAPI` also refuses a background request
+(`"background": true`): a background response finishes after the request returns, and only a
+stream waits for it.
 
 ## Model providers
 
@@ -401,6 +413,14 @@ The arguments:
     entity class to text. For the citation format, it says what the line labels are and how to
     cite them. `judge` puts the text for each class among `entities` where the template has
     `{citation_instructions}`.
+  * `viewer_params` (optional): a function that takes a citation's `address_in_entity` and
+    returns the params that open the cited entity's panel in the viewer at that place, or `None`
+    for an address it cannot place. A coding agent's links use it
+    ([Asking an agent about a job](../../../fxtr/references/guides/asking-an-agent-about-a-job.mdx)). The line citation
+    format's opens a transcript at the cited lines. Without it, a link opens the whole entity.
+    For an agent to find your format, register it in your package's entry points, in the group
+    `fxtr.citation_formats`: the entry point's name is the name the agent passes, and its value is
+    the `CustomFormat`.
 
   A format that only checks the value leaves both mappings empty. It is an error for the schema
   to name a format that is not listed here, to list a format the schema never names, or to list
@@ -455,8 +475,9 @@ send. A placeholder with no text given for it is an error.
 ### Citations
 
 The model cites an entity by the name it has in `entities`, in square brackets. With the format
-this package ships, a citation is the name, a colon and a line address. For example,
-`[run:T0B3L4]` cites transcript 0, block 3, line 4 of the entity named `run`.
+this package ships, a citation is the name, a colon, a line address and anchors. For example,
+`[run:T0B3L4 "pytest -x"]` cites the text `pytest -x` in transcript 0, block 3, line 4 of the
+entity named `run`.
 
 Put `{citation_instructions}` in the template to have this explained to the model, with the
 names your entities have.
@@ -494,24 +515,78 @@ the prompt with a label on every message and on every line of it:
 * `T0B3` is block 3 (the fourth message) of transcript 0. A transcript given by itself, not
   inside an agent run, has no transcript number: `B3`.
 * `L0`, `L1` and so on number the lines of that message. Each non-empty line of its text is a
-  line, and each tool call is one line.
+  line. A tool call is one line, unless it has an argument shown below.
 
-A citation names the entity, then a line or a run of lines:
+An argument shown below is a string argument, at any depth, that holds a newline, such as a script
+in a `bash` call, or that is longer than 200 characters, such as a long one-line command. The call's first line shows `<argument below>` in its place. The argument
+follows between tags that name its path, and each of its non-empty lines is a line of the
+message:
 
-| Citation            | What it cites                          |
-| ------------------- | -------------------------------------- |
-| `[run:T0B3L1]`      | Line 1 of that message                 |
-| `[run:T0B3L0-1]`    | Lines 0 to 1                           |
-| `[transcript:B3L1]` | A line of a transcript given by itself |
+```text
+<|L1|><tool call>bash({"command":"<argument below>","timeout":600})
+<|argument command|>
+<|L2|>cat > train.py <<'EOF'
+<|L3|>import torch
+<|L4|>EOF
+</|argument command|>
+</tool call>
+```
+
+So a citation can name part of a script.
+
+Every citation has anchors after its lines. The anchors name the part of the lines that a claim
+rests on: the first and the last characters of the part, each in double quotes, with `…` (or
+`...`) between them. The part starts where the first anchor is, in the first cited line. It ends
+where the second anchor ends, in the last cited line. One anchor alone cites exactly that text.
+The viewer highlights only the part. These citations cite parts of the `bash` call above:
+
+```text
+[run:T0B3L2 "train.py"…"'EOF'"]      part of line 2
+[run:T0B3L2-3 "train.py"…"import"]   from inside line 2 to inside line 3
+[run:T0B3L2 "train.py"]              exactly that text
+[run:T0B3L3 "import torch"]          the whole of line 3
+[run:T0B3L1-4 "<tool call>bash("…"EOF"]   the whole call
+```
+
+To cite whole lines, the first anchor is the start of the first line, and the second anchor is
+the end of the last line. An anchor is at least 5 characters long, unless it is a whole line,
+such as `EOF`. An anchor must be in its line once only, so the part is never a guess. When it
+matches more than once, the one match that cuts no word or number short is taken:
+`print('epoch 1` is the start of `print('epoch 1')`, not of `print('epoch 10')`. An anchor can
+hold brackets, but not a double quote. Brackets inside an anchor are not read as citations.
+
+Some lines have no anchor at an edge: each anchor there holds a double quote, or is in the line
+more than once. Examples are `"x"` and `abcde"abcde`. For such an edge, the anchor is empty:
+`""` as the first anchor is the start of the first cited line, and `""` as the second anchor is
+the end of the last cited line. So `[run:T0B3L0 ""…""]` cites the whole of a line like `"x"`.
+An empty anchor is accepted only when the edge has no other anchor, and the validator's message
+gives that anchor. `""` alone is not accepted. A tool call's first line often ends with a quote,
+as in `<tool call>submit({"answer":"<argument below>"})`. That whole line is
+`"<tool call>submit("…""`. When a judge copies such a line with its quotes as one anchor, the
+validator's message gives the anchors for the whole cited lines.
+
+A citation names the entity, then a line or a run of lines, then anchors:
+
+| Citation                          | What it cites                                                      |
+| --------------------------------- | ------------------------------------------------------------------ |
+| `[run:T0B3L1 "start"…"end"]`      | The part of line 1 of that message from `start` to `end`           |
+| `[run:T0B3L0-1 "start"…"end"]`    | The part of lines 0 to 1 from `start` in line 0 to `end` in line 1 |
+| `[run:T0B3L1 "text"]`             | Exactly `text`, in line 1                                          |
+| `[transcript:B3L1 "start"…"end"]` | A part of a line of a transcript given by itself                   |
 
 In a field of this format, every citation has to be a line or a run of lines of an agent run or
 a transcript. The format's validator sends an answer back to the model when a citation:
 
 * names a line, a block or a transcript that does not exist;
 * names a whole block (`[run:T0B3]`) or the whole entity (`[run]`);
+* has no anchors (`[run:T0B3L1]`);
 * has no entity name (`[T0B3L1]`);
 * is not well formed: nothing follows the colon (`[run:]`), there is a space before the colon
-  (`[run :T0B3L1]`), or the address starts or ends with a space (`[run: T0B3L1]`);
+  (`[run :T0B3L1]`), the address starts or ends with a space (`[run: T0B3L1]`), or no closing
+  bracket ends it (`[run:T0B3L1` at the end of a line, or a bracket outside the quotes);
+* has anchors that are not in their lines once only, or that are shorter than 5 characters and
+  not a whole line;
+* has an empty anchor at an edge of a line that has another anchor there, or `""` alone;
 * has a name that is not an entity's: `[agent_run:T0B3L1]`, or `[Run]` when the entity is
   named `run`;
 * cites anything other than an agent run or a transcript. `[rubric]` and
