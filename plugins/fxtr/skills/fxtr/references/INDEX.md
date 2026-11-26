@@ -22,6 +22,7 @@ in the order of the site's navigation.
 ## Guides
 
 - [Running and viewing jobs](guides/running-and-viewing-jobs.mdx): Launch jobs from Python or the command line, watch them in the viewer, read their results, and resume, inspect, or share them.
+- [Asking an agent about a job](guides/asking-an-agent-about-a-job.mdx): Give a coding agent fxtr's MCP tools, so it can answer questions about your jobs and cite what it read with links into the viewer.
 - [Importing external datasets](guides/importing-external-datasets.mdx): Bring external datasets into fxtr as typed arrays for processing in workflows.
 - [Pushing and pulling jobs](guides/pushing-and-pulling-jobs.mdx): Share jobs through a fxtr hub or an OCI registry, with fxtr push and pull.
 

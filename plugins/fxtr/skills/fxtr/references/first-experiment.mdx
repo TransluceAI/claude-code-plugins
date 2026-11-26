@@ -873,10 +873,12 @@ for the joke evaluation:
 ### Show conversations in the viewer
 
 The viewer can show your conversations using the renderers from behaviors. Add
-`fxtr-view-behaviors` to the dependencies in `views/package.json`:
+`fxtr-view-behaviors`, and `shiki`, which it highlights code with, to the dependencies in
+`views/package.json`:
 
 ```json views/package.json
-"fxtr-view-behaviors": "link:./vendor/fxtr/packages/fxtr-view-behaviors"
+"fxtr-view-behaviors": "link:./vendor/fxtr/packages/fxtr-view-behaviors",
+"shiki": "4.6.0"
 ```
 
 Register its renderers in `views/src/bundle.ts`:

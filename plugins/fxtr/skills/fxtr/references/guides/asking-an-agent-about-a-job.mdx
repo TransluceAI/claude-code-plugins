@@ -1,0 +1,184 @@
+---
+title: "Asking an agent about a job"
+description: "Give a coding agent fxtr's MCP tools, so it can answer questions about your jobs and cite what it read with links into the viewer."
+---
+
+A coding agent, such as Claude Code, Claude Desktop, or Codex, can answer questions about your
+project's jobs: which runs are interesting, why a step failed, what a model did in a transcript.
+`fxtr mcp` gives the agent tools to read the jobs, and to cite what it read with links that open
+the experiment viewer at the step, invocation, message, or line it cites.
+
+The tools work on a project on your computer: its database and its viewer.
+
+## Set up the tools
+
+The agent starts `uv run fxtr mcp` in your project's directory. The project's `.mcp.json` tells
+it to.
+
+### A new project
+
+`fxtr new` writes `.mcp.json`. There is nothing more to set up.
+
+### A project that has no `.mcp.json`
+
+Run this in the project's directory, and commit the `.mcp.json` it writes:
+
+```bash
+uv run fxtr mcp add
+```
+
+For Codex, run `uv run fxtr mcp add --codex` instead.
+
+Or add the tools by hand, in one of these ways, from the project's directory.
+
+* **Write `.mcp.json`** at the project's root, with this text:
+
+  ```json
+  {
+    "mcpServers": {
+      "fxtr": {
+        "command": "uv",
+        "args": ["run", "fxtr", "mcp"]
+      }
+    }
+  }
+  ```
+
+  Claude Code and the Code tab of Claude Desktop read this file. Commit it, so everyone who
+  clones the project gets the tools.
+
+* **Add the tools to Claude Code** for this project only:
+
+  ```bash
+  claude mcp add fxtr -- uv run fxtr mcp
+  ```
+
+* **Add the tools to Codex:**
+
+  ```bash
+  codex mcp add fxtr -- uv run --directory /path/to/your/project fxtr mcp
+  ```
+
+  Codex does not start the tools in the project's directory, so `--directory` names it.
+
+Then start a new session of the agent in the project. To check that it has the tools, ask it to
+list the project's jobs.
+
+`fxtr mcp` needs fxtr's `debug-web` extra. A project that `fxtr new` made has it.
+
+### Start the viewer for links
+
+The agent's links open the viewer that runs for the project. Start the viewer once, and keep it
+running:
+
+```bash
+uv run fxtr view
+```
+
+Without a running viewer, the tools still read the jobs, but the agent's links have no address
+to open.
+
+## Ask questions
+
+Ask in your own words. For example:
+
+* "Which runs did the judges disagree on? Open the most interesting one."
+* "Did any step fail in the last job? Why?"
+* "Show me a rollout that was not compliant, and the line in its transcript where the model
+  decided what to do."
+
+The agent names a step by its path from the root workflow, such as `/judge` or `/outer/judge`,
+and one invocation of a step by its keys, such as `{"model": "sonnet", "prompt": 3}`. It reads
+the job's report first, when the root workflow returns one.
+
+## Citations
+
+The agent puts a link on the words of each claim it makes about a job. A click opens the viewer
+in a new tab, at what the link cites:
+
+* a step, or one invocation of it
+* a field of an invocation's output or inputs
+* a stored entity
+* one message of a transcript, or lines of it, which the viewer highlights
+* the code of a step's function, as the job ran it
+
+To cite lines of a transcript, the agent reads the transcript as a judge reads it, with each
+block and line labelled (`B3L4`). A judge's own citations open at the same lines.
+
+To see something without a new tab, ask the agent to show it to you. The agent then opens the
+panels in the viewer page you have open, pinned beside the panels there. If the page shows
+another job, it switches to that job, and its message offers to go back. With no page open, a
+new tab opens.
+
+## Long answers
+
+When an answer is too long for the agent's context, the tools write it to a file in the
+project's `.fxtr/mcp/` directory, and give the agent the file's path and its start. The agent
+reads or searches the file with its own tools. `.fxtr/` is in the `.gitignore` that `fxtr new`
+writes. Delete `.fxtr/mcp/` at any time; the tools write the files again when they need them.
+
+## What the tools do
+
+The tools read. The only one that changes anything is `open_in_viewer`, which changes what your
+viewer page shows. They never launch, resume, or cancel a job.
+
+| Tool               | What it does                                                                                |
+| ------------------ | ------------------------------------------------------------------------------------------- |
+| `list_jobs`        | Lists the project's jobs, newest first.                                                     |
+| `list_steps`       | Lists the steps of a job's workflow, with their dims, counts by state, and common failures. |
+| `read_step_output` | Reads the output rows of a step, filtered by keys or by text.                               |
+| `read_invocation`  | Reads one invocation: its state, error, logs, inputs, and output.                           |
+| `read_entity`      | Reads a stored entity as JSON, or as the labelled text a judge reads.                       |
+| `read_step_code`   | Reads a step's function at the commit the job ran.                                          |
+| `make_viewer_link` | Makes a link that opens panels in the viewer.                                               |
+| `open_in_viewer`   | Opens a link's panels in your open viewer page.                                             |
+
+[The CLI reference](../reference/cli.mdx#viewer) describes `fxtr mcp`.
+
+## The viewer's URL
+
+`make_viewer_link` writes viewer links, so you need this only to read a link or to write one by
+hand. The viewer's URL holds the job, the level shown, the slice, and the open panels: the
+viewer's address (the one `fxtr view` printed, also saved in `.fxtr/viewer.json` within the
+project), then `#` and `&`-separated parts.
+
+```
+http://127.0.0.1:8000/#job=<job id>&p=table(/outer/judge,model=sonnet)&p=.output.transcript
+```
+
+`job` is the job's ID (left out, the newest job). Each `p` opens a panel, in order, each
+following the one before it; `pin` opens one that stays as it is. A panel is an address, a view
+applied to a location and params:
+
+* **The view** is `table`, `invocation`, `tree`, `code`, a renderer's or page's id, or nothing for
+  the default.
+* **The location** is a step path from the root (`/outer/judge`), or `cid:<cid>` for an entity,
+  then a field path (`.output.transcript`, `.inputs.prompt`, `[2]` for a list item).
+* **Params** bind dims and the params a view declares, by name, as bare values (`3`, `sonnet`) or
+  JSON (`"two words"`, `{"message":2}`). A string that reads as a number, such as a run id
+  `"341894"`, is written as JSON.
+
+The `invocation` view shows one call: its status line, then its inputs, a workflow's runs, and
+its output; with `section_order=output_first` the output comes right under the status line
+instead (`section_order=inputs_first` is the default). After the first panel, a location may be
+relative to the panel before it: `.field…` below it, `../step` a sibling. Percent-encode only
+spaces, `%`, `&`, `#`, `+`, and quotes.
+
+A conversation's view takes a `selector` param that marks one message and highlights lines of
+it: `selector={"lines":[4,6],"message":3}`, with `"transcript":1` for an agent run's second
+transcript. A judge's line citation `T1B3L4-6` opens there.
+
+A panel on a step is enough to show where the step is: the link opens on the trace of the
+workflow that step is in, scrolled to its card, so bind the keys of the mapped workflows on the
+way (`model=sonnet` above) in the panel or the slice. Three more parts say otherwise:
+
+```
+http://127.0.0.1:8000/#job=<job id>&w=flowchart(/outer,model=sonnet)&slice=(prompt=3)&card=judge
+```
+
+`w` is the workflow invocation shown: `trace`, `flowchart`, or the id of an `InvocationPanel`
+renderer of that workflow, applied to its step path from the root, with the keys of the mapped
+workflows on the way. Left out, it is the trace of the workflow the first panel's step is in, or
+the root's when no panel shows a step. `card` names a step of the workflow shown (or `return`,
+what it returned) whose card to scroll to, which points at a step without opening a panel; left
+out, it is the first panel's step. `slice` picks dim values for every card and panel.

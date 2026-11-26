@@ -1,0 +1,324 @@
+---
+title: "Running code in containers"
+description: "Start containers on your own Docker daemon, on Modal, or on AWS, run code in them, and control what they can reach and how long they live."
+---
+
+behaviors can run code in containers that it starts and removes for you: one container or several
+that talk to each other, described by a compose file. The same description runs on the Docker
+daemon of your machine, or on a virtual machine of its own on Modal or on AWS. This page covers
+setting up, running code, and the controls over network access, lifetime, and images.
+
+## Set up
+
+Add behaviors to the project, with the extra of the provider you will use:
+
+```bash
+uv add "behaviors[modal]"   # Modal
+uv add "behaviors[ec2]"     # AWS
+uv add behaviors            # your own Docker daemon needs no extra
+```
+
+Every provider needs the `docker` command line on the machine that runs your code, with the
+compose plugin (2.24 or later). It checks every environment with `docker compose config`, and
+drives the containers through it. Beyond that:
+
+| Provider        | What it needs                                                                                                                             | Where containers run                               |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| Your own Docker | A running Docker daemon, version 28 or later, with BuildKit                                                                               | On that daemon, beside your other containers       |
+| Modal           | A Modal account and token: `modal token new`, or `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`. No local daemon                               | On a Modal VM of its own for each environment      |
+| AWS             | An installation in your account, set up once ([Running on AWS](#running-on-aws)), AWS credentials, and the `ssh` command. No local daemon | On an EC2 instance of its own for each environment |
+
+Modal is the quickest to start with: it needs nothing but the token. The first environment in a
+Modal workspace also builds the VM's image there, which takes several minutes. After that, a new
+environment is ready in about a minute, and one you have prepared before in about 15 seconds.
+
+## Run a first container
+
+An *environment* is a compose project: one or more services, each a container. A *provider* runs
+it for the duration of a block and removes it afterwards.
+
+```python
+import anyio
+
+from behaviors.rollouts.agents.containers import running_environment, single_service_environment
+from behaviors.rollouts.agents.modal_vm import modal_docker_provider
+
+PYTHON = "python@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b"
+spec = single_service_environment(f"FROM {PYTHON}\nWORKDIR /work\n", egress=None)
+
+
+async def main() -> None:
+    provider = modal_docker_provider()
+    async with running_environment(provider, spec) as environment:
+        container = environment.services["agent"]
+        result = await container.exec(["python3", "-c", "print(6 * 7)"])
+        print(result.stdout, result.exit_code)
+
+
+anyio.run(main)
+```
+
+`single_service_environment` builds the one-container case from a Dockerfile: a service named
+`agent` that runs `sleep infinity`, so it stays up for you to run commands in.
+`egress=None` gives it no network at all (see [Internet access](#internet-access)).
+
+To run the same thing on your own daemon, change the provider:
+
+```python
+from behaviors.rollouts.agents.containers import DockerProvider
+
+provider = DockerProvider()
+```
+
+### Images are pinned by digest
+
+Every image is named by its digest, in `FROM` and in a compose file's `image:`, so that an
+environment runs the same thing every time. A tag such as `python:3.12-slim` is refused. To find
+a tag's digest:
+
+```bash
+docker buildx imagetools inspect python:3.12-slim --format '{{json .Manifest.Digest}}'
+```
+
+## Run code and move files
+
+A service of a running environment is a container with four operations:
+
+```python
+from pathlib import Path
+
+result = await container.exec(
+    ["python3", "job.py"], cwd="/work", env={"SEED": "7"}, timeout_s=600
+)
+result.stdout, result.stderr, result.exit_code
+
+await container.upload(Path("input.json"), "/work/input.json")
+await container.download("/work/output.json", Path("output.json"))
+
+stream = await container.open_stream(["python3", "-u", "server.py"])
+await stream.send(b"a line of input\n")
+reply = await stream.receive()
+await stream.aclose()
+```
+
+* `exec` runs a command to completion and returns its output and exit code. A command that
+  exceeds `timeout_s` raises `ExecTimeoutError`; the container keeps running.
+* `upload` and `download` copy one file in or out.
+* `open_stream` starts a command and gives you its stdin and stdout as a byte stream, for a
+  process you talk to while it runs.
+
+## Several containers
+
+Write the compose file yourself when an environment has more than one service. The spec is a
+small file tree, as bytes: `compose.yaml` and whatever it builds from.
+
+```python
+from behaviors.rollouts.agents.containers import EnvironmentSpec
+
+ALPINE = "alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
+COMPOSE = f"""
+services:
+  agent:
+    build: {{context: ./agent}}
+    command: ["sleep", "infinity"]
+    networks: [net]
+    cpus: 1
+    mem_limit: 2g
+  database:
+    image: {ALPINE}
+    command: ["sh", "-c", "while true; do echo ready | nc -l -p 7000; done"]
+    networks: [net]
+    cpus: 1
+    mem_limit: 2g
+networks:
+  net: {{internal: true}}
+"""
+spec = EnvironmentSpec(
+    {
+        "compose.yaml": COMPOSE.encode(),
+        "agent/Dockerfile": f"FROM {ALPINE}\nRUN apk add --no-cache python3\n".encode(),
+    }
+)
+```
+
+Services on the same network reach each other by service name (`nc database 7000` from `agent`).
+`environment.services` holds each one by name.
+
+A spec is checked when it is constructed, and anything outside what is allowed raises
+`EnvironmentSpecError` naming the key, before anything is built or started:
+
+* A service has `image:` or `build:`, and may set `command`, `entrypoint`, `working_dir`, `user`,
+  `environment`, `healthcheck`, `depends_on`, `networks`, `volumes` (named volumes only),
+  `cpus`, `mem_limit`, `profiles`, `restart`, `stop_grace_period`, `tty`, `stdin_open` and
+  `labels`. Other keys, such as `privileged`, `ports`, `cap_add` and host bind mounts, are
+  refused.
+* Every network is `internal: true`. A service on no network declares `network_mode: none`.
+* A `$` in the file is written `$$`: values are never filled in from your shell's environment.
+
+Each service is limited to 2 CPUs and 4 GB of memory unless it sets `cpus` and `mem_limit`. On
+Modal, an environment's services share one VM (2 CPUs and 8 GB by default, set with `cpus` and
+`memory_mb` of `modal_docker_provider`), 1 GB of which is kept for the VM itself; a spec whose
+limits don't fit is refused when it is prepared, before anything is built.
+
+To run many environments at the same time, enter `provider.environment` once for each, in
+separate tasks. Each is independent: on Modal each gets its own VM, and on your own daemon each
+gets its own networks.
+
+## Prepare once, run many times
+
+`running_environment` does two things, which you can do separately:
+
+```python
+prepared = await provider.prepare(spec)          # build or pull every image, once
+async with provider.environment(prepared) as environment:
+    ...
+```
+
+`prepare` returns a record naming the exact images. Every run of that record uses those images,
+without building again, so the runs of a sweep are comparable. Preparing the same spec again is
+quick, also from another process or another machine: on Modal the built images are kept in a
+store in your workspace (a Volume and a Dict named `behaviors-images`, created on first use).
+Nothing is removed from that store by itself.
+
+## Internet access
+
+A container has no route out unless two things agree. The spec asks, per service, with
+`x-egress`; and the provider's policy, which you write in your own code, grants it:
+
+```python
+from behaviors.rollouts.agents.containers import EgressAllow, ProviderPolicy
+
+spec = single_service_environment(
+    f"FROM {PYTHON}\n", egress=EgressAllow(allow=("pypi.org", "files.pythonhosted.org"))
+)
+policy = ProviderPolicy(egress_ceiling=frozenset({"pypi.org", "files.pythonhosted.org"}))
+provider = modal_docker_provider(policy=policy)
+```
+
+In a compose file the same request is `x-egress: {allow: [pypi.org, files.pythonhosted.org]}` on
+the service, in place of `network_mode: none`.
+
+* The service then reaches the listed hosts and nothing else: other hosts, bare IP addresses,
+  UDP and ping are refused. An entry is a hostname, a wildcard such as
+  `*.githubusercontent.com`, an IP address or a CIDR.
+* A hostname is reachable over HTTPS (port 443) only, on every provider; an IP address or CIDR
+  on any port. Plain HTTP to a listed hostname is refused, which matters for package managers
+  that default to it: `apt` uses `http://` mirrors unless its sources say otherwise. If the
+  agent has to install system packages while it runs, switch the image's sources to
+  `https://` in the Dockerfile and install `ca-certificates` there (`debian` and `ubuntu`
+  base images come without it). Building the image is not affected.
+* A spec that asks for a host the policy doesn't cover is refused when it is prepared. The
+  default policy grants nothing. `DEFAULT_CODING_ALLOWED_HOSTS`, from the same module, is a
+  ready-made ceiling for coding work: the npm and Python package registries, the Debian and
+  Ubuntu package mirrors, and GitHub.
+* `x-egress: full`, with `ProviderPolicy(allow_full=True)`, is an unrestricted route out.
+* Other services of the same environment are unaffected: each has only what it asked for.
+
+On Modal the VM is held to the same lists from outside: it reaches only what its services'
+allowlists name between them, so code that broke out of its container gets no further than the
+containers could. `modal_docker_provider(egress_network=HostNetwork.open())` gives such a VM
+an open network instead. Each service is still limited to its allowlist in the same way, but
+nothing then limits code that has broken out of its container. `HostNetwork` is in
+`behaviors.rollouts.agents.hosts`.
+
+The boundary around the VM is coarser than the one around each service, and it is the only one
+left once code is out of its container. It allows what any service of the environment may
+reach, not one service's list. A wildcard such as `*.example.com` also lets the VM reach
+`example.com` itself. A host that shares its address with other sites, as on a CDN, can be
+asked for one of those other sites. And Modal's DNS resolver answers the VM for any name, so
+data can leave in the names it looks up.
+
+On AWS the VM is held to the lists by a relay: a second, small instance (`t3.small` unless you
+pass `relay_instance_type`) leased beside the environment's VM and ended with it. The VM reaches
+your account's registry and that relay and nothing else, and the relay carries only what the
+allowlists name: a hostname over HTTPS only, as everywhere, and an address on any port. A
+wildcard does not take in its own domain there, and no DNS resolver answers the VM for
+other names; a site that shares an address with a listed host can still be asked for. The relay
+counts toward `capacity` like any instance. `ec2_docker_provider(egress_network=HostNetwork.open())`
+runs such an environment on one VM with an open network instead, with the same caveat as on
+Modal.
+
+Building an image is separate: a build can fetch packages (`apt-get`, `pip install`) whatever the
+services' egress, but its base images must be pinned and `ADD` can't fetch from a URL.
+
+## Lifetime and stopping
+
+An environment is removed when its block ends, whether it finishes, raises, or is cancelled. On
+Modal and on AWS, that terminates its VM. Three more bounds apply there:
+
+* **Lifetime.** `lifetime_s` of `modal_docker_provider` (4 hours by default, 24 at most), or
+  `lease_duration_s` of `ec2_docker_provider` (4 hours by default), is how long an
+  environment's VM may live. Shortly before that (a minute on Modal, two on AWS), the block is
+  cancelled, the VM terminated, and `EnvironmentExpired` raised. The VM is also ended at its
+  lifetime from outside your process: by Modal, or on AWS by a timer on the instance and the
+  installation's janitor.
+* **A lost driver.** While a block runs, your process tells the VM it is alive every few
+  seconds. A VM that hears nothing for `driver_timeout_s` (5 minutes by default) ends itself. So
+  a process that is killed, or a laptop that sleeps or loses its connection for that long, leaves
+  nothing running. Pass `driver_timeout_s=None` to turn this off.
+* **Stopping from outside.** A VM terminated in the provider's console or through its API ends
+  the environment: the block raises `HostStopped` (from `behaviors.rollouts.agents.hosts`),
+  which says why the VM stopped.
+
+Interrupting your process with Ctrl-C unwinds its blocks, so every VM is terminated: within
+seconds on Modal, and in about half a minute on AWS.
+
+## Running on AWS
+
+On AWS, each environment runs on an EC2 instance of its own, leased for it and terminated with
+it, and images are kept in your account's registry (ECR). This needs an *installation* in the
+account and Region: networks, roles, a records bucket, and a janitor that removes what a lost
+driver leaves behind. Set one up once, with credentials allowed to create VPCs and IAM roles:
+
+```bash
+behaviors-ec2 setup --region us-west-2 --ecr-endpoints on --alarm-email you@example.com
+behaviors-ec2 bake-ami --region us-west-2
+behaviors-ec2 doctor --region us-west-2
+```
+
+`setup` deploys the installation and prints the role that drivers act as; `--ecr-endpoints on`
+gives the instances their private route to the registry (billed hourly while on). `bake-ami`
+builds the machine image instances boot. `doctor` checks the result. `behaviors-ec2 --help`
+lists the rest, among them `destroy` and credentials for machines without an interactive login.
+
+After that, anyone whose AWS credentials may assume the driver role runs environments:
+
+```python
+import boto3
+
+from behaviors.rollouts.agents.ec2.deploy import Installation
+from behaviors.rollouts.agents.ec2.provider import ec2_capacity, ec2_docker_provider
+
+installation = Installation(boto3.Session(region_name="us-west-2"))
+capacity = await ec2_capacity(installation, max_vcpus=16)
+provider = await ec2_docker_provider(installation, capacity=capacity)
+```
+
+`provider` is used like the others: `running_environment(provider, spec)`, or `prepare` and
+`environment`. Name the Region explicitly, as here. `capacity` is your process's budget: it
+never has more than `max_vcpus` worth of instances at once, and environments beyond that wait
+their turn. Create one and pass it to every provider that should share the budget.
+
+An instance is an `m7i.large` (2 CPUs, 8 GB) unless you pass `instance_type`. A new environment
+takes about four minutes (an instance builds its images, another runs it); one prepared before
+is ready in about a minute and a half.
+
+The installation's janitor deletes images that no environment has used for 7 days. To keep the
+images of a prepared environment longer, pin it: `await provider.pin(prepared, purpose="...")`.
+
+## What is isolated from what
+
+* **Environments from each other.** On Modal and on AWS, each environment has a VM of its own,
+  which no other environment can reach. On your own daemon, each has its own networks, which
+  another environment's containers are not on, but all share your machine's kernel.
+* **Containers from the machine under them.** On Modal and on AWS, the VM's Docker runs with
+  user-namespace remapping: root in a container is an unprivileged user on the VM. Your own
+  daemon runs as you configured it.
+* **Containers from the internet.** As [Internet access](#internet-access) describes. The VM of
+  an environment in which no service has egress is cut off as well: on Modal it has no network
+  interface at all, and on AWS it reaches only your account's registry.
+  The VM of one in which a service has egress reaches only what the allowlists name: on Modal
+  directly, and on AWS through a relay on an instance of its own.
+
+Containers on a shared kernel are not a strong boundary, so run code you don't trust on Modal or
+on AWS rather than on your own daemon.

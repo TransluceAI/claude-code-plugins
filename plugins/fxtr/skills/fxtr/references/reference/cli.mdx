@@ -116,6 +116,20 @@ describes each command's options.
   When the project's viewer is already running, it opens that one and exits.
 </ResponseField>
 
+<ResponseField name="fxtr mcp">
+  Serve MCP tools over stdio that let a coding agent read the project's jobs and cite them with
+  links into the viewer. A coding agent runs it, as the project's `.mcp.json` says: see
+  [Asking an agent about a job](../guides/asking-an-agent-about-a-job.mdx). The links open in the
+  project's running viewer (`fxtr view`).
+</ResponseField>
+
+<ResponseField name="fxtr mcp add">
+  Give the project's coding agent the tools of `fxtr mcp`. The command adds the `fxtr` server to
+  the project's `.mcp.json`, and writes the file when the project has none. A file that names an
+  `fxtr` server already stays as it is. With `--codex`, the command registers the server with
+  Codex instead. Start a new agent session afterwards to get the tools.
+</ResponseField>
+
 <ResponseField name="fxtr views vendor">
   Copy the fxtr TypeScript packages the project's renderers build against into
   `views/vendor/fxtr/`, replacing any earlier copy. Run it after upgrading fxtr, then

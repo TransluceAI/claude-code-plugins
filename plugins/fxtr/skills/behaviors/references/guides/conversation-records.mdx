@@ -63,7 +63,7 @@ assert find_metadata(turn.metadata, QuestionIndex) == QuestionIndex(index=0)
 
 Add an entry to existing metadata with `turn.metadata + (DynamicData.from_tagged(value),)`.
 `Transcript`, `TranscriptGroup`, and `AgentRun` metadata is different: it is a JSON object with
-string keys, matching [Docent](docent-readings.mdx)'s metadata.
+string keys, matching [Docent](#converting-to-docent)'s metadata.
 
 ## Storing records
 
@@ -109,6 +109,15 @@ followed by the turns in order, including a final context turn the model never a
 `to_agent_run` wraps that transcript in an `AgentRun`. The projection drops each turn's metadata,
 so judge from the native rollout when you need usage, stop reasons, or other metadata.
 
+## Converting to Docent
+
+Docent is Transluce's platform for analyzing AI agent behavior. With the `docent` extra,
+`behaviors[docent]`, `behaviors.implementations.docent` converts records to the Docent SDK's data
+models: `to_docent_transcript(transcript)` and `to_docent_agent_run(agent_run)` convert a
+`Transcript` and an `AgentRun`, and `to_docent_message(message)` converts one message. To have a
+model assess a transcript or agent run, use the
+[judge step](language-models.mdx#a-judge-step).
+
 ## Showing conversations in the viewer
 
 The `fxtr-view-behaviors` package draws rollouts, transcripts, transcript groups, agent runs, and
@@ -128,7 +137,8 @@ export default bundle;
 
 A new project's renderer package doesn't depend on it yet: add
 `"fxtr-view-behaviors": "link:./vendor/fxtr/packages/fxtr-view-behaviors"` to the dependencies in
-`views/package.json`, like the other fxtr packages, and run `pnpm install` in `views/` (see
+`views/package.json`, like the other fxtr packages, and `"shiki": "4.6.0"`, which it highlights
+code with. Then run `pnpm install` in `views/` (see
 [The renderer package](../../../fxtr/references/reference/renderers.mdx#the-renderer-package)). The package also exports
 `ChatRolloutView`, for a rollout inside a view of your own, and `ComparedRollouts`.
 
